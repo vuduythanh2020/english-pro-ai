@@ -1,10 +1,10 @@
-import { ChatOpenAI } from "@langchain/openai";
 import {
   SystemMessage,
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
+import { ChatAnthropic } from "@langchain/anthropic";
 import { config } from "../../config/env.js";
 import { BA_PROMPT } from "../prompts/dev-team.prompts.js";
 import type { DevTeamStateType } from "../state.js";
@@ -15,10 +15,14 @@ import {
 } from "../tools/codebase-tools.js";
 import { logger } from "../../utils/logger.js";
 
-const llm = new ChatOpenAI({
-  modelName: config.openai.model,
-  apiKey: config.openai.apiKey,
-  temperature: 0.5,
+// Khởi tạo model Claude cho BA
+const llm = new ChatAnthropic({
+  anthropicApiKey: config.anthropic.apiKey,
+  modelName: 'claude-sonnet-4-6',
+  temperature: 0.2,
+  clientOptions: config.anthropic.baseUrl
+    ? { baseURL: config.anthropic.baseUrl }
+    : undefined,
 });
 
 /**
@@ -76,35 +80,49 @@ export async function baAgentNode(
 
   // Agent loop: LLM suy nghĩ → gọi tool → nhận kết quả → tiếp tục
   const MAX_TOOL_ROUNDS = 5;
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await llmWithTools.invoke(messages);
-    messages.push(response);
+  const MAX_TOOLS_PER_ROUND = 5;
 
-    // Nếu không gọi tool → đã xong, trả kết quả
-    const toolCalls = response.tool_calls;
-    if (!toolCalls || toolCalls.length === 0) {
-      const designDocument =
-        typeof response.content === "string"
-          ? response.content
-          : JSON.stringify(response.content);
+  try {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const response = await llmWithTools.invoke(messages);
+      messages.push(response);
 
-      return {
-        designDocument,
-        currentPhase: "design",
-        humanFeedback: "",
-      };
+      const toolCalls = response.tool_calls;
+      if (!toolCalls || toolCalls.length === 0) {
+        const designDocument =
+          typeof response.content === "string"
+            ? response.content
+            : JSON.stringify(response.content);
+
+        return {
+          designDocument,
+          currentPhase: "design",
+          humanFeedback: "",
+        };
+      }
+
+      const limitedCalls = toolCalls.slice(0, MAX_TOOLS_PER_ROUND);
+      if (toolCalls.length > MAX_TOOLS_PER_ROUND) {
+        logger.warn(`⚠️ BA Agent muốn gọi ${toolCalls.length} tools, chỉ xử lý ${MAX_TOOLS_PER_ROUND}`);
+      }
+
+      logger.info(`🔧 BA Agent gọi ${limitedCalls.length} tool(s) (vòng ${round + 1})`);
+      for (const tc of limitedCalls) {
+        const toolMsg = await executeToolCall(tc);
+        messages.push(toolMsg);
+      }
     }
-
-    // Thực thi từng tool call
-    logger.info(`🔧 BA Agent gọi ${toolCalls.length} tool(s) (vòng ${round + 1})`);
-    for (const tc of toolCalls) {
-      const toolMsg = await executeToolCall(tc);
-      messages.push(toolMsg);
-    }
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error(`❌ BA Agent lỗi khi gọi LLM/tools: ${errMsg}`);
+    logger.info("🔄 Thử lại không dùng tools...");
   }
 
-  // Nếu vượt quá số vòng, gọi LLM lần cuối không có tools
-  logger.warn("⚠️ BA Agent đã dùng hết số vòng tool. Gọi LLM lần cuối.");
+  // Fallback: gọi LLM lần cuối không có tools
+  logger.warn("⚠️ BA Agent fallback: gọi LLM không có tools.");
+  // Thêm chỉ dẫn cuối cùng để đảm bảo agent tạo ra văn bản đầy đủ
+  messages.push(new HumanMessage("Bây giờ, hãy tạo Tài liệu thiết kế chi tiết (Design Document) hoàn chỉnh và đầy đủ theo yêu cầu, dựa trên tất cả thông tin bạn đã thu thập được."));
+
   const finalResponse = await llm.invoke(messages);
   const designDocument =
     typeof finalResponse.content === "string"

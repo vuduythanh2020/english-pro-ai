@@ -15,10 +15,14 @@ import {
 } from "../tools/codebase-tools.js";
 import { logger } from "../../utils/logger.js";
 
+// Khởi tạo model OpenAI cho TESTER
 const llm = new ChatOpenAI({
-  modelName: config.openai.model,
   apiKey: config.openai.apiKey,
-  temperature: 0.3,
+  modelName: config.openai.model,
+  temperature: 0,
+  configuration: config.openai.baseUrl
+    ? { baseURL: config.openai.baseUrl }
+    : undefined,
 });
 
 /**
@@ -82,35 +86,48 @@ Hãy đánh giá code quality, tạo test cases, và kết luận PASS/FAIL.`;
 
   // Agent loop: LLM suy nghĩ → gọi tool → nhận kết quả → tiếp tục
   const MAX_TOOL_ROUNDS = 5;
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await llmWithTools.invoke(messages);
-    messages.push(response);
+  const MAX_TOOLS_PER_ROUND = 5;
 
-    // Nếu không gọi tool → đã xong, trả kết quả
-    const toolCalls = response.tool_calls;
-    if (!toolCalls || toolCalls.length === 0) {
-      const testResults =
-        typeof response.content === "string"
-          ? response.content
-          : JSON.stringify(response.content);
+  try {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const response = await llmWithTools.invoke(messages);
+      messages.push(response);
 
-      return {
-        testResults,
-        currentPhase: "testing",
-        humanFeedback: "",
-      };
+      const toolCalls = response.tool_calls;
+      if (!toolCalls || toolCalls.length === 0) {
+        const testResults =
+          typeof response.content === "string"
+            ? response.content
+            : JSON.stringify(response.content);
+
+        return {
+          testResults,
+          currentPhase: "testing",
+          humanFeedback: "",
+        };
+      }
+
+      const limitedCalls = toolCalls.slice(0, MAX_TOOLS_PER_ROUND);
+      if (toolCalls.length > MAX_TOOLS_PER_ROUND) {
+        logger.warn(`⚠️ TESTER Agent muốn gọi ${toolCalls.length} tools, chỉ xử lý ${MAX_TOOLS_PER_ROUND}`);
+      }
+
+      logger.info(`🔧 TESTER Agent gọi ${limitedCalls.length} tool(s) (vòng ${round + 1})`);
+      for (const tc of limitedCalls) {
+        const toolMsg = await executeToolCall(tc);
+        messages.push(toolMsg);
+      }
     }
-
-    // Thực thi từng tool call
-    logger.info(`🔧 TESTER Agent gọi ${toolCalls.length} tool(s) (vòng ${round + 1})`);
-    for (const tc of toolCalls) {
-      const toolMsg = await executeToolCall(tc);
-      messages.push(toolMsg);
-    }
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error(`❌ TESTER Agent lỗi khi gọi LLM/tools: ${errMsg}`);
+   // Fallback: gọi LLM lần cuối không có tools
+  logger.warn("⚠️ TESTER Agent fallback: gọi LLM không có tools.");
+  // Thêm chỉ dẫn cuối cùng
+  messages.push(new HumanMessage("Bây giờ, hãy thực hiện Review Code và tạo Test Plan hoàn chỉnh theo đúng format yêu cầu, dựa trên tất cả thông tin bạn đã thu thập được."));
   }
 
-  // Nếu vượt quá số vòng, gọi LLM lần cuối không có tools
-  logger.warn("⚠️ TESTER Agent đã dùng hết số vòng tool. Gọi LLM lần cuối.");
+  logger.warn("⚠️ TESTER Agent fallback: gọi LLM không có tools.");
   const finalResponse = await llm.invoke(messages);
   const testResults =
     typeof finalResponse.content === "string"

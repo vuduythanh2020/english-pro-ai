@@ -16,9 +16,12 @@ import {
 import { logger } from "../../utils/logger.js";
 
 const llm = new ChatOpenAI({
-  modelName: config.openai.model,
   apiKey: config.openai.apiKey,
-  temperature: 0.3,
+  modelName: config.openai.model,
+  temperature: 0,
+  configuration: config.openai.baseUrl
+    ? { baseURL: config.openai.baseUrl }
+    : undefined,
 });
 
 /**
@@ -62,7 +65,11 @@ export async function devAgentNode(
 
   let userMessage = `Dựa trên tài liệu thiết kế đã được duyệt, hãy viết source code:\n\n## User Stories\n${state.userStories}\n\n## Design Document\n${state.designDocument}`;
 
-  if (humanFeedback) {
+  if (humanFeedback && state.testResults) {
+    // Quay lại từ giai đoạn testing → có báo cáo lỗi từ Tester
+    userMessage = `Code trước đó bị lỗi khi test. Hãy dựa vào báo cáo của Tester để sửa code.\n\n## Báo cáo lỗi từ Tester\n${state.testResults}\n\n## Feedback từ Product Manager\n${humanFeedback}\n\n## Code cũ cần sửa\n${state.sourceCode}\n\n## Design Document (tham khảo)\n${state.designDocument}`;
+  } else if (humanFeedback) {
+    // Quay lại từ code review → chỉ có feedback của PM
     userMessage = `Code trước đó cần chỉnh sửa. Feedback từ Product Manager:\n\n${humanFeedback}\n\nCode cũ:\n${state.sourceCode}\n\nHãy chỉnh sửa lại theo feedback.`;
   }
 
@@ -76,35 +83,52 @@ export async function devAgentNode(
 
   // Agent loop: LLM suy nghĩ → gọi tool → nhận kết quả → tiếp tục
   const MAX_TOOL_ROUNDS = 5;
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await llmWithTools.invoke(messages);
-    messages.push(response);
+  const MAX_TOOLS_PER_ROUND = 5; // Giới hạn tool calls mỗi vòng để tránh payload quá lớn
 
-    // Nếu không gọi tool → đã xong, trả kết quả
-    const toolCalls = response.tool_calls;
-    if (!toolCalls || toolCalls.length === 0) {
-      const sourceCode =
-        typeof response.content === "string"
-          ? response.content
-          : JSON.stringify(response.content);
+  try {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const response = await llmWithTools.invoke(messages);
+      messages.push(response);
 
-      return {
-        sourceCode,
-        currentPhase: "development",
-        humanFeedback: "",
-      };
+      // Nếu không gọi tool → đã xong, trả kết quả
+      const toolCalls = response.tool_calls;
+      if (!toolCalls || toolCalls.length === 0) {
+        const sourceCode =
+          typeof response.content === "string"
+            ? response.content
+            : JSON.stringify(response.content);
+
+        return {
+          sourceCode,
+          currentPhase: "development",
+          humanFeedback: "",
+        };
+      }
+
+      // Giới hạn số tool calls xử lý mỗi vòng
+      const limitedCalls = toolCalls.slice(0, MAX_TOOLS_PER_ROUND);
+      if (toolCalls.length > MAX_TOOLS_PER_ROUND) {
+        logger.warn(`⚠️ DEV Agent muốn gọi ${toolCalls.length} tools, chỉ xử lý ${MAX_TOOLS_PER_ROUND}`);
+      }
+
+      logger.info(`🔧 DEV Agent gọi ${limitedCalls.length} tool(s) (vòng ${round + 1})`);
+      for (const tc of limitedCalls) {
+        const toolMsg = await executeToolCall(tc);
+        messages.push(toolMsg);
+      }
     }
-
-    // Thực thi từng tool call
-    logger.info(`🔧 DEV Agent gọi ${toolCalls.length} tool(s) (vòng ${round + 1})`);
-    for (const tc of toolCalls) {
-      const toolMsg = await executeToolCall(tc);
-      messages.push(toolMsg);
-    }
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    logger.error(`❌ DEV Agent lỗi khi gọi LLM/tools: ${errMsg}`);
+    // Fallback: gọi LLM không có tools
+    logger.info("🔄 Thử lại không dùng tools...");
   }
 
-  // Nếu vượt quá số vòng, gọi LLM lần cuối không có tools
-  logger.warn("⚠️ DEV Agent đã dùng hết số vòng tool. Gọi LLM lần cuối.");
+  // Fallback: gọi LLM lần cuối không có tools
+  logger.warn("⚠️ DEV Agent fallback: gọi LLM không có tools.");
+  // Thêm chỉ dẫn cuối cùng
+  messages.push(new HumanMessage("Bây giờ, hãy thực hiện viết Source Code hoàn chỉnh và đầy đủ theo yêu cầu, dựa trên tất cả thông tin bạn đã thu thập được."));
+  
   const finalResponse = await llm.invoke(messages);
   const sourceCode =
     typeof finalResponse.content === "string"

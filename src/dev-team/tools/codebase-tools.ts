@@ -40,7 +40,7 @@ export const readProjectFileTool = tool(
     try {
       const content = fs.readFileSync(safePath, "utf-8");
       const lines = content.split("\n");
-      const maxLines = 200;
+      const maxLines = 100;
       const truncated = lines.length > maxLines;
       const output = lines.slice(0, maxLines).join("\n");
 

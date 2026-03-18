@@ -1,13 +1,17 @@
-import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
 import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import { config } from "../../config/env.js";
 import { PO_PROMPT } from "../prompts/dev-team.prompts.js";
 import type { DevTeamStateType } from "../state.js";
 
-const llm = new ChatOpenAI({
-  modelName: config.openai.model,
-  apiKey: config.openai.apiKey,
+// Khởi tạo model Claude cho PO
+const llm = new ChatAnthropic({
+  anthropicApiKey: config.anthropic.apiKey,
+  modelName: 'claude-opus-4-6-thinking',
   temperature: 0.7,
+  clientOptions: config.anthropic.baseUrl
+    ? { baseURL: config.anthropic.baseUrl }
+    : undefined,
 });
 
 /**
