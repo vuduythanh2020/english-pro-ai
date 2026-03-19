@@ -3,15 +3,29 @@ import * as path from "path";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { logger } from "../../utils/logger.js";
+import { executionTools } from "./execution-tools.js";
 
 /**
  * Root dir của dự án — dùng để giới hạn phạm vi đọc file.
  */
 const PROJECT_ROOT = process.cwd();
 const SRC_DIR = path.join(PROJECT_ROOT, "src");
+const FRONTEND_DIR = path.join(PROJECT_ROOT, "frontend");
 
 /**
- * Kiểm tra đường dẫn có nằm trong thư mục src/ không (sandbox).
+ * Các file root được phép đọc (ngoài src/ và frontend/).
+ * Agents cần đọc package.json để biết test runner, scripts, dependencies.
+ */
+const ALLOWED_ROOT_FILES = [
+  "package.json",
+  "tsconfig.json",
+  "vite.config.ts",
+  "vitest.config.ts",
+];
+
+/**
+ * Kiểm tra đường dẫn có nằm trong phạm vi cho phép không (sandbox).
+ * Cho phép: src/*, frontend/*, và một số file root cụ thể.
  */
 function resolveSafePath(filePath: string): string | null {
   // Hỗ trợ cả đường dẫn tương đối (src/...) và tuyệt đối
@@ -19,28 +33,35 @@ function resolveSafePath(filePath: string): string | null {
     ? filePath
     : path.resolve(PROJECT_ROOT, filePath);
 
-  // Đảm bảo nằm trong src/
-  if (!resolved.startsWith(SRC_DIR)) {
-    return null;
+  // Đảm bảo nằm trong src/ hoặc frontend/
+  if (resolved.startsWith(SRC_DIR) || resolved.startsWith(FRONTEND_DIR)) {
+    return resolved;
   }
-  return resolved;
+
+  // Cho phép đọc một số file root cụ thể (read-only config files)
+  const relativePath = path.relative(PROJECT_ROOT, resolved);
+  if (ALLOWED_ROOT_FILES.includes(relativePath)) {
+    return resolved;
+  }
+
+  return null;
 }
 
 /**
  * Tool: Đọc nội dung file trong dự án.
- * Giới hạn trong thư mục src/ và tối đa 200 dòng đầu.
+ * Giới hạn trong thư mục src/ hoặc frontend/ và tối đa 500 dòng đầu.
  */
 export const readProjectFileTool = tool(
   async ({ filePath }) => {
     const safePath = resolveSafePath(filePath);
     if (!safePath) {
-      return `❌ Lỗi: Chỉ được đọc file trong thư mục src/. Đường dẫn: ${filePath}`;
+      return `❌ Lỗi: Chỉ được đọc file trong thư mục src/ hoặc frontend/. Đường dẫn: ${filePath}`;
     }
 
     try {
       const content = fs.readFileSync(safePath, "utf-8");
       const lines = content.split("\n");
-      const maxLines = 100;
+      const maxLines = 500;
       const truncated = lines.length > maxLines;
       const output = lines.slice(0, maxLines).join("\n");
 
@@ -56,7 +77,7 @@ export const readProjectFileTool = tool(
   {
     name: "read_project_file",
     description:
-      "Đọc nội dung một file mã nguồn trong dự án. Chỉ đọc được file trong thư mục src/. Dùng để hiểu code hiện tại trước khi viết code mới.",
+      "Đọc nội dung một file mã nguồn trong dự án. Chỉ đọc được file trong thư mục src/ hoặc frontend/. Dùng để hiểu code hiện tại trước khi viết code mới.",
     schema: z.object({
       filePath: z
         .string()
@@ -69,13 +90,13 @@ export const readProjectFileTool = tool(
 
 /**
  * Tool: Liệt kê file và thư mục con.
- * Giới hạn trong thư mục src/.
+ * Giới hạn trong thư mục src/ hoặc frontend/.
  */
 export const listDirectoryTool = tool(
   async ({ dirPath }) => {
     const safePath = resolveSafePath(dirPath);
     if (!safePath) {
-      return `❌ Lỗi: Chỉ được xem thư mục trong src/. Đường dẫn: ${dirPath}`;
+      return `❌ Lỗi: Chỉ được xem thư mục trong src/ hoặc frontend/. Đường dẫn: ${dirPath}`;
     }
 
     try {
@@ -111,7 +132,7 @@ export const listDirectoryTool = tool(
   {
     name: "list_directory",
     description:
-      "Xem danh sách file và thư mục con trong một thư mục của dự án. Chỉ xem được trong thư mục src/. Dùng để hiểu cấu trúc dự án trước khi viết code.",
+      "Xem danh sách file và thư mục con trong một thư mục của dự án. Chỉ xem được trong thư mục src/ hoặc frontend/. Dùng để hiểu cấu trúc dự án trước khi viết code.",
     schema: z.object({
       dirPath: z
         .string()
@@ -123,6 +144,15 @@ export const listDirectoryTool = tool(
 );
 
 /**
- * Tất cả codebase tools — dùng để bind vào LLM.
+ * Codebase tools cơ bản (read-only) — dùng cho PO, BA agents.
  */
 export const codebaseTools = [readProjectFileTool, listDirectoryTool];
+
+/**
+ * Tất cả tools (read + write + execute) — dùng cho DEV, TESTER agents.
+ */
+export const allDevTools = [
+  readProjectFileTool,
+  listDirectoryTool,
+  ...executionTools,
+];

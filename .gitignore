@@ -3,5 +3,7 @@ dist/
 .env
 *.log
 .DS_Store
+debug-logs/
+debug-dev-request.json
 frontend/node_modules/
 frontend/dist/

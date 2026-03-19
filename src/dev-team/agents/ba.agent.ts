@@ -18,10 +18,16 @@ import { logger } from "../../utils/logger.js";
 // Khởi tạo model Claude cho BA
 const llm = new ChatAnthropic({
   anthropicApiKey: config.anthropic.apiKey,
-  modelName: 'claude-sonnet-4-6',
+  modelName: 'claude-opus-4-6',
   temperature: 0.2,
+  maxTokens: 16384, // BA cần output dài cho design document chi tiết
   clientOptions: config.anthropic.baseUrl
-    ? { baseURL: config.anthropic.baseUrl }
+    ? {
+      baseURL: config.anthropic.baseUrl,
+      defaultHeaders: {
+        "Authorization": `Bearer ${config.anthropic.apiKey}`
+      }
+    }
     : undefined,
 });
 
@@ -94,6 +100,15 @@ export async function baAgentNode(
             ? response.content
             : JSON.stringify(response.content);
 
+        // Validate: nếu response quá ngắn (< 300 ký tự), bắt ép gọi tool hoặc viết dài ra
+        if (designDocument.length < 300) {
+          logger.warn(`⚠️ BA Agent trả về response quá ngắn (${designDocument.length} chars). Yêu cầu viết lại.`);
+          messages.push(new HumanMessage(
+            `Response của bạn quá ngắn (${designDocument.length} ký tự). TÀI LIỆU THIẾT KẾ PHẢI DÀI HƠN 300 KÝ TỰ! Nếu bạn cần đọc code, hãy lập tức DÙNG TOOL (Function Call API) chứ TUYỆT ĐỐI KHÔNG nhắn văn xuôi xin phép kiểu 'Tôi sẽ đọc code'. Còn nếu đã đủ thông tin, hãy trình bày Thiết kế chi tiết.`
+          ));
+          continue;
+        }
+
         return {
           designDocument,
           currentPhase: "design",
@@ -101,15 +116,23 @@ export async function baAgentNode(
         };
       }
 
-      const limitedCalls = toolCalls.slice(0, MAX_TOOLS_PER_ROUND);
       if (toolCalls.length > MAX_TOOLS_PER_ROUND) {
         logger.warn(`⚠️ BA Agent muốn gọi ${toolCalls.length} tools, chỉ xử lý ${MAX_TOOLS_PER_ROUND}`);
       }
 
-      logger.info(`🔧 BA Agent gọi ${limitedCalls.length} tool(s) (vòng ${round + 1})`);
-      for (const tc of limitedCalls) {
-        const toolMsg = await executeToolCall(tc);
-        messages.push(toolMsg);
+      logger.info(`🔧 BA Agent gọi ${Math.min(toolCalls.length, MAX_TOOLS_PER_ROUND)} tool(s) (vòng ${round + 1})`);
+      let callCount = 0;
+      for (const tc of toolCalls) {
+        callCount++;
+        if (callCount <= MAX_TOOLS_PER_ROUND) {
+          const toolMsg = await executeToolCall(tc);
+          messages.push(toolMsg);
+        } else {
+          messages.push(new ToolMessage({
+            content: `❌ Lỗi: Bạn đã gọi quá ${MAX_TOOLS_PER_ROUND} tools trong một vòng. Tool này bị bỏ qua để tránh nghẽn hệ thống. Vui lòng gọi lại ở vòng sau nếu cần thiết.`,
+            tool_call_id: tc.id || `err_${Date.now()}`
+          }));
+        }
       }
     }
   } catch (error: unknown) {
@@ -119,9 +142,10 @@ export async function baAgentNode(
   }
 
   // Fallback: gọi LLM lần cuối không có tools
-  logger.warn("⚠️ BA Agent fallback: gọi LLM không có tools.");
-  // Thêm chỉ dẫn cuối cùng để đảm bảo agent tạo ra văn bản đầy đủ
-  messages.push(new HumanMessage("Bây giờ, hãy tạo Tài liệu thiết kế chi tiết (Design Document) hoàn chỉnh và đầy đủ theo yêu cầu, dựa trên tất cả thông tin bạn đã thu thập được."));
+  logger.warn("⚠️ BA Agent fallback: gọi LLM khi không đủ số vòng dùng tools");
+  messages.push(new HumanMessage(
+    "Bây giờ, hãy tạo Tài liệu thiết kế chi tiết (Design Document) HOÀN CHỈNH và ĐẦY ĐỦ theo yêu cầu, dựa trên tất cả thông tin bạn đã thu thập được. KHÔNG được trả lời ngắn gọn. Phải bao gồm: 1) Phân tích nghiệp vụ, 2) Thiết kế kỹ thuật, 3) UI/UX Guidelines, 4) Rủi ro & Giải pháp."
+  ));
 
   const finalResponse = await llm.invoke(messages);
   const designDocument =

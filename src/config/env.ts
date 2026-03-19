@@ -11,11 +11,25 @@ export const config = {
     model: process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-20240620",
     baseUrl: process.env.ANTHROPIC_BASE_URL || undefined,
   },
+  database: {
+    url: process.env.DATABASE_URL || "",
+  },
   server: {
     port: parseInt(process.env.PORT || "3000", 10),
     env: process.env.NODE_ENV || "development",
   },
 } as const;
+
+const dbUser = process.env.DB_USER || "postgres";
+const dbPass = process.env.DB_PASSWORD || "";
+const dbHost = process.env.DB_HOST || "localhost";
+const dbPort = process.env.DB_PORT || "5432";
+const dbName = process.env.DB_NAME || "postgres";
+
+/** Biến env tiện dụng, dùng chung cho database.config.ts */
+export const env = {
+  DATABASE_URL: process.env.DATABASE_URL || `postgresql://${dbUser}:${dbPass}@${dbHost}:${dbPort}/${dbName}`,
+};
 
 export function validateConfig() {
   if (!config.openai.apiKey) {

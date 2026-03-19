@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { config, validateConfig } from "./config/env.js";
+import { initializeDatabase } from "./config/database.config.js";
 import { chatRoutes } from "./api/chat.routes.js";
 import { devTeamRoutes } from "./api/dev-team.routes.js";
 import { errorHandler, requestLogger } from "./api/middleware.js";
@@ -32,9 +33,20 @@ app.get("/api/health", (_req, res) => {
 // Error handler
 app.use(errorHandler);
 
-// Start server
-app.listen(config.server.port, () => {
-  logger.info(`
+// Start server with database initialization
+async function startServer(): Promise<void> {
+  try {
+    // Khởi tạo database: test kết nối và chạy migrations
+    await initializeDatabase();
+    logger.info("✅ Database initialized successfully.");
+  } catch (error) {
+    // Database không bắt buộc cho toàn bộ tính năng
+    // Server vẫn khởi động nhưng audit log sẽ không hoạt động
+    logger.warn("⚠️ Database initialization failed. Audit logging will be disabled.", error);
+  }
+
+  app.listen(config.server.port, () => {
+    logger.info(`
   ╔══════════════════════════════════════════════╗
   ║         🎓 EnglishPro AI Server             ║
   ║──────────────────────────────────────────────║
@@ -50,7 +62,10 @@ app.listen(config.server.port, () => {
   ║  GET  /api/dev-team/status/:id - Status      ║
   ║  GET  /api/health        - Health check      ║
   ╚══════════════════════════════════════════════╝
-  `);
-});
+    `);
+  });
+}
+
+startServer();
 
 export default app;

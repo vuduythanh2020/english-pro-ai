@@ -1,4 +1,4 @@
-import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
 import {
   SystemMessage,
   HumanMessage,
@@ -8,50 +8,141 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { config } from "../../config/env.js";
 import { TESTER_PROMPT } from "../prompts/dev-team.prompts.js";
 import type { DevTeamStateType } from "../state.js";
-import {
-  codebaseTools,
-  readProjectFileTool,
-  listDirectoryTool,
-} from "../tools/codebase-tools.js";
+import { allDevTools } from "../tools/codebase-tools.js";
+import { executeToolCall, buildToolErrorMessage } from "../utils/execute-tool.js";
 import { logger } from "../../utils/logger.js";
 
-// Khởi tạo model OpenAI cho TESTER
-const llm = new ChatOpenAI({
-  apiKey: config.openai.apiKey,
-  modelName: config.openai.model,
-  temperature: 0,
-  configuration: config.openai.baseUrl
-    ? { baseURL: config.openai.baseUrl }
+/**
+ * Tất cả tools mà Tester Agent có thể sử dụng.
+ * allDevTools đã bao gồm: readProjectFile, listDirectory, readFileFull, writeFile, executeCommand, getProjectStructure, submitFeature.
+ */
+const testerToolkit = allDevTools;
+
+// Khởi tạo model Claude cho TESTER
+const llm = new ChatAnthropic({
+  anthropicApiKey: config.anthropic.apiKey,
+  modelName: 'claude-opus-4-6',
+  temperature: 0.2,
+  maxTokens: 16384, // Tester cần output dài cho báo cáo test chi tiết + viết test files
+  clientOptions: config.anthropic.baseUrl
+    ? {
+      baseURL: config.anthropic.baseUrl,
+      defaultHeaders: {
+        "Authorization": `Bearer ${config.anthropic.apiKey}`
+      }
+    }
     : undefined,
 });
 
 /**
- * Thực thi tool call và trả về ToolMessage.
+ * Phân tích execution logs để tính code quality metrics.
  */
-async function executeToolCall(
-  toolCall: { name: string; args: Record<string, unknown>; id?: string }
-): Promise<ToolMessage> {
-  let result: string;
+function parseCodeQualityMetrics(executionLogs: string): {
+  typeErrors: number;
+  lintErrors: number;
+  testsPassed: number;
+  testsFailed: number;
+  testCoverage: number;
+} {
+  const metrics = {
+    typeErrors: 0,
+    lintErrors: 0,
+    testsPassed: 0,
+    testsFailed: 0,
+    testCoverage: 0,
+  };
 
-  if (toolCall.name === "read_project_file") {
-    result = await readProjectFileTool.invoke(toolCall.args as { filePath: string });
-  } else if (toolCall.name === "list_directory") {
-    result = await listDirectoryTool.invoke(toolCall.args as { dirPath: string });
-  } else {
-    result = `❌ Tool không tồn tại: ${toolCall.name}`;
+  // Parse type errors từ tsc output
+  const typeErrorMatch = executionLogs.match(/Found (\d+) error/);
+  if (typeErrorMatch) {
+    metrics.typeErrors = parseInt(typeErrorMatch[1], 10);
   }
 
-  return new ToolMessage({
-    content: result,
-    tool_call_id: toolCall.id || "",
-  });
+  // Parse lint errors từ eslint output
+  const lintErrorMatch = executionLogs.match(/(\d+) error/);
+  if (lintErrorMatch && !typeErrorMatch) {
+    metrics.lintErrors = parseInt(lintErrorMatch[1], 10);
+  }
+
+  // Parse test results
+  const testPassMatch = executionLogs.match(/(\d+) pass/i);
+  if (testPassMatch) {
+    metrics.testsPassed = parseInt(testPassMatch[1], 10);
+  }
+
+  const testFailMatch = executionLogs.match(/(\d+) fail/i);
+  if (testFailMatch) {
+    metrics.testsFailed = parseInt(testFailMatch[1], 10);
+  }
+
+  // Parse coverage
+  const coverageMatch = executionLogs.match(/All files\s*\|\s*([\d.]+)/);
+  if (coverageMatch) {
+    metrics.testCoverage = parseFloat(coverageMatch[1]);
+  }
+
+  return metrics;
 }
 
 /**
- * TESTER Agent - Tạo test cases, review code và báo cáo kết quả.
+ * Ước tính token count từ text (~3 chars/token mixed content).
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3);
+}
+
+/**
+ * Truncate text nếu vượt quá maxChars.
+ */
+function truncateText(text: string, maxChars: number, keepEnd = false): string {
+  if (text.length <= maxChars) return text;
+  if (keepEnd) {
+    return `...(truncated ${text.length - maxChars} chars)...\n` + text.slice(-maxChars);
+  }
+  return text.slice(0, maxChars) + `\n...(truncated ${text.length - maxChars} chars)...`;
+}
+
+/**
+ * Gọi LLM với retry logic cho 502/503/429.
+ */
+async function invokeWithRetry(
+  llmInstance: ReturnType<typeof llm.bindTools>,
+  messages: BaseMessage[],
+  agentName: string,
+  round: number,
+): Promise<any> {
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await llmInstance.invoke(messages);
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      const isRetryable = /502|503|429|overloaded|temporarily unavailable|rate.?limit/i.test(errMsg);
+
+      logger.warn(`⚠️ [${agentName}] API Error (vòng ${round + 1}, thử ${attempt}/${MAX_RETRIES}): ${errMsg}`);
+
+      if (!isRetryable || attempt === MAX_RETRIES) {
+        logger.error(`❌ [${agentName}] Hết retry hoặc lỗi không retryable. Throwing...`);
+        throw e;
+      }
+
+      const delay = 3000 * Math.pow(2, attempt - 1);
+      logger.info(`⏳ [${agentName}] Đợi ${delay / 1000}s trước khi retry...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
+/**
+ * TESTER Agent - Chạy test thực tế, review code, và báo cáo kết quả.
  *
- * Có khả năng đọc codebase qua tools để hiểu code thực tế
- * trước khi tạo test plan, đảm bảo test cases sát với implementation.
+ * Khả năng:
+ * - Đọc codebase qua tools để hiểu code thực tế
+ * - Chạy npm test, tsc --noEmit, eslint để kiểm tra code
+ * - Viết test files nếu cần
+ * - Phân tích output để tạo bug report chính xác
+ * - Tính toán code quality metrics
+ * - Retry khi gặp 502/503/429 từ API
  */
 export async function testerAgentNode(
   state: DevTeamStateType
@@ -63,21 +154,48 @@ export async function testerAgentNode(
     ? `${TESTER_PROMPT}\n\n## BỐI CẢNH DỰ ÁN HIỆN TẠI\n${projectContext}`
     : TESTER_PROMPT;
 
-  const userMessage = `Hãy review code và tạo test plan dựa trên:
+  // Truncate large fields — tăng limit cho design doc vì BA giờ trả output dài hơn
+  const truncatedDesign = truncateText(state.designDocument || "", 16000);
+  const truncatedSource = truncateText(state.sourceCode || "", 12000);
+  const truncatedDevLogs = truncateText(state.executionLogs || "", 5000, true);
+
+  const userMessage = `Hãy review code và chạy test thực tế dựa trên:
 
 ## User Stories & Acceptance Criteria
 ${state.userStories}
 
 ## Design Document
-${state.designDocument}
+${truncatedDesign}
 
-## Source Code
-${state.sourceCode}
+## Source Code (báo cáo từ Dev)
+${truncatedSource}
 
-Hãy đánh giá code quality, tạo test cases, và kết luận PASS/FAIL.`;
+## Execution Logs từ Dev (nếu có)
+${truncatedDevLogs || "Không có logs từ dev."}
 
-  // Bind tools vào LLM
-  const llmWithTools = llm.bindTools(codebaseTools);
+QUAN TRỌNG: Bạn PHẢI sử dụng tools THEO ĐÚNG THỨ TỰ SAU:
+1. Đọc code thực tế trong dự án (read_project_file hoặc read_file_full) — KHÔNG dựa vào Source Code ở trên vì có thể bị truncate
+2. Chạy tsc --noEmit để kiểm tra type errors (execute_command)
+3. Chạy npm run build để verify code compile thành công (execute_command)
+4. Chạy npm run lint (execute_command) — nếu fail vì chưa có linter thì BỎ QUA
+5. VIẾT test files (*.test.ts) bằng write_file TRƯỚC — TUYỆT ĐỐI KHÔNG chạy npm test trước khi viết test files
+6. SAU KHI đã viết test files → Chạy npm test (execute_command)
+7. Dựa trên kết quả thực tế → gọi submit_feature để nộp kết luận PASS/FAIL
+
+THÔNG TIN TEST RUNNER (ĐÃ BIẾT — KHÔNG CẦN TÌM):
+- Test runner: vitest | Lệnh: npm test
+- KHÔNG dùng pipe |, ||, &&, redirect >, 2> trong execute_command
+- Chỉ dùng lệnh đơn giản: npm test, tsc --noEmit, npm run build, npm run lint
+
+Nếu phát hiện bugs, hãy gợi ý cách fix CỤ THỂ (file nào, dòng nào, sửa gì).`;
+
+  // Diagnostic logging
+  const totalChars = systemPrompt.length + userMessage.length;
+  logger.info(`📊 [TESTER] Prompt Diagnostics: system=${systemPrompt.length}c, user=${userMessage.length}c, total=${totalChars}c (~${estimateTokens(systemPrompt) + estimateTokens(userMessage)} tokens), tools=${testerToolkit.length}`);
+
+  // Bind tools vào LLM để kích hoạt Native Tool Calling.
+  // XML parsing bên dưới vẫn giữ như safety net phòng trường hợp LLM fallback sang text.
+  const llmWithTools = llm.bindTools(testerToolkit);
 
   const messages: BaseMessage[] = [
     new SystemMessage(systemPrompt),
@@ -85,58 +203,240 @@ Hãy đánh giá code quality, tạo test cases, và kết luận PASS/FAIL.`;
   ];
 
   // Agent loop: LLM suy nghĩ → gọi tool → nhận kết quả → tiếp tục
-  const MAX_TOOL_ROUNDS = 5;
+  const MAX_TOOL_ROUNDS = 15;
   const MAX_TOOLS_PER_ROUND = 5;
+  let executionLogs = "";
 
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await llmWithTools.invoke(messages);
+      const totalMsgChars = messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0);
+      logger.debug(`📨 [TESTER] Vòng ${round + 1}: ${messages.length} messages, ~${totalMsgChars} chars`);
+
+      const response = await invokeWithRetry(llmWithTools, messages, "TESTER", round);
       messages.push(response);
 
-      const toolCalls = response.tool_calls;
-      if (!toolCalls || toolCalls.length === 0) {
-        const testResults =
-          typeof response.content === "string"
-            ? response.content
-            : JSON.stringify(response.content);
-
-        return {
-          testResults,
-          currentPhase: "testing",
-          humanFeedback: "",
+      // Debug: dump LLM response mỗi vòng ra file để phân tích
+      try {
+        const fs = await import("fs");
+        const debugDir = "debug-logs";
+        if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
+        const dumpPath = `${debugDir}/tester-round-${round + 1}.json`;
+        const responseData = {
+          round: round + 1,
+          timestamp: new Date().toISOString(),
+          contentType: typeof response.content,
+          contentPreview: typeof response.content === "string" ? response.content.slice(0, 500) : "(non-string)",
+          toolCalls: response.tool_calls?.map((tc: any) => ({
+            name: tc.name,
+            argsKeys: Object.keys(tc.args || {}),
+            argsPreview: JSON.stringify(tc.args).slice(0, 300),
+            id: tc.id,
+          })) || [],
+          toolCallCount: response.tool_calls?.length || 0,
         };
+        fs.writeFileSync(dumpPath, JSON.stringify(responseData, null, 2), "utf-8");
+        logger.debug(`📝 [TESTER] Response vòng ${round + 1} dumped to ${dumpPath}`);
+      } catch { /* ignore debug dump errors */ }
+
+      // Ưu tiên native tool calls từ API
+      let toolCalls = response.tool_calls || [];
+
+      // Safety net: parse XML tags nếu LLM không dùng native tool calling
+      if (typeof response.content === "string") {
+        const contentStr = response.content;
+
+        // Match write_file
+        const writeRegex = /<write_file>\s*<path>(.*?)<\/path>\s*<content>([\s\S]*?)<\/content>\s*<\/write_file>/g;
+        let match;
+        while ((match = writeRegex.exec(contentStr)) !== null) {
+          toolCalls.push({
+            name: "write_file",
+            args: { filePath: match[1].trim(), content: match[2].trim() },
+            id: `call_xml_${Math.random().toString(36).substring(7)}`
+          });
+        }
+
+        // Match execute_command
+        const cmdRegex = /<execute_command>\s*<command>(.*?)<\/command>\s*<\/execute_command>/g;
+        while ((match = cmdRegex.exec(contentStr)) !== null) {
+          toolCalls.push({
+            name: "execute_command",
+            args: { command: match[1].trim(), cwd: "." },
+            id: `call_xml_${Math.random().toString(36).substring(7)}`
+          });
+        }
+
+        // Match generic tool_call (read_project_file, list_directory...)
+        const genericRegex = /<tool_call>\s*<name>(.*?)<\/name>\s*<args>([\s\S]*?)<\/args>\s*<\/tool_call>/g;
+        while ((match = genericRegex.exec(contentStr)) !== null) {
+          try {
+            toolCalls.push({
+              name: match[1].trim(),
+              args: JSON.parse(match[2].trim()),
+              id: `call_xml_${Math.random().toString(36).substring(7)}`
+            });
+          } catch (e) {
+            logger.error(`❌ Lỗi parse JSON trong thẻ <args>: ${e}`);
+          }
+        }
+
+        // Match submit_feature
+        const submitRegex = /<submit_feature>([\s\S]*?)<\/submit_feature>/g;
+        let finalTestReport = "";
+        while ((match = submitRegex.exec(contentStr)) !== null) {
+          finalTestReport = match[1].trim();
+          toolCalls.push({
+            name: "submit_feature",
+            args: { report: finalTestReport },
+            id: `call_xml_${Math.random().toString(36).substring(7)}`
+          });
+        }
+
+        if (toolCalls.length > 0 && (!response.tool_calls || response.tool_calls.length === 0)) {
+          logger.info("🔧 XML Safety Net: Bóc tách tool calls từ văn bản trả về (TESTER LLM không dùng native tool API).");
+        }
       }
 
-      const limitedCalls = toolCalls.slice(0, MAX_TOOLS_PER_ROUND);
+      if (toolCalls.length === 0) {
+        logger.warn(`⚠️ TESTER Agent không gọi tool nào ở vòng ${round + 1}. Nội dung: ${typeof response.content === "string" ? response.content.slice(0, 200) : "..."}`);
+        messages.push(new HumanMessage("CẢNH BÁO: Bạn vừa trả lời văn bản thuần tuý mà KHÔNG GỌI TOOL NÀO. Bạn PHẢI gọi tool (read_project_file, write_file, execute_command, submit_feature...) qua Function Call API. HÃY GỌI TOOL NGAY."));
+        continue;
+      }
+
       if (toolCalls.length > MAX_TOOLS_PER_ROUND) {
         logger.warn(`⚠️ TESTER Agent muốn gọi ${toolCalls.length} tools, chỉ xử lý ${MAX_TOOLS_PER_ROUND}`);
       }
 
-      logger.info(`🔧 TESTER Agent gọi ${limitedCalls.length} tool(s) (vòng ${round + 1})`);
-      for (const tc of limitedCalls) {
-        const toolMsg = await executeToolCall(tc);
-        messages.push(toolMsg);
+      logger.info(`🔧 TESTER Agent gọi ${Math.min(toolCalls.length, MAX_TOOLS_PER_ROUND)} tool(s) (vòng ${round + 1}/${MAX_TOOL_ROUNDS})`);
+
+      let isFinished = false;
+      let finalReport = "";
+
+      let callCount = 0;
+      for (const tc of toolCalls) {
+        callCount++;
+
+        if (isFinished) {
+          messages.push(new ToolMessage({
+            content: `❌ Tool bị bỏ qua vì bạn đã gọi submit_feature trước đó trong cùng vòng.`,
+            tool_call_id: tc.id || `err_${Date.now()}`
+          }));
+          continue;
+        }
+
+        if (callCount > MAX_TOOLS_PER_ROUND) {
+          messages.push(new ToolMessage({
+            content: `❌ Lỗi: Bạn đã gọi quá ${MAX_TOOLS_PER_ROUND} tools trong một vòng. Tool này bị bỏ qua để tránh nghẽn hệ thống. Vui lòng gọi lại ở vòng sau nếu cần thiết.`,
+            tool_call_id: tc.id || `err_${Date.now()}`
+          }));
+          continue;
+        }
+
+        if (tc.name === "submit_feature") {
+          isFinished = true;
+          finalReport = (tc.args as any).report;
+          messages.push(new ToolMessage({
+            content: `✅ Đã tiếp nhận submit_feature.`,
+            tool_call_id: tc.id || `err_${Date.now()}`
+          }));
+          continue;
+        }
+
+        let toolMsg: any;
+        try {
+          toolMsg = await executeToolCall(tc);
+          messages.push(toolMsg);
+
+          // Thu thập execution logs
+          if (tc.name === "execute_command") {
+            executionLogs += `\n--- ${tc.args.command} ---\n${typeof toolMsg.content === "string" ? toolMsg.content : JSON.stringify(toolMsg.content)}\n`;
+          }
+        } catch (e: unknown) {
+          messages.push(buildToolErrorMessage(
+            tc.name,
+            tc.id || `err_${Date.now()}`,
+            e,
+            tc.args,
+          ));
+        }
+      }
+
+      if (isFinished) {
+        // Phân tích metrics từ execution logs
+        const codeQualityMetrics = parseCodeQualityMetrics(executionLogs);
+
+        // Trích xuất tester feedback (gợi ý fix cụ thể)
+        const testerFeedback = extractTesterFeedback(finalReport);
+
+        return {
+          testResults: finalReport,
+          currentPhase: "testing",
+          humanFeedback: "",
+          executionLogs,
+          codeQualityMetrics,
+          testerFeedback,
+        };
       }
     }
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : String(error);
-    logger.error(`❌ TESTER Agent lỗi khi gọi LLM/tools: ${errMsg}`);
-   // Fallback: gọi LLM lần cuối không có tools
-  logger.warn("⚠️ TESTER Agent fallback: gọi LLM không có tools.");
-  // Thêm chỉ dẫn cuối cùng
-  messages.push(new HumanMessage("Bây giờ, hãy thực hiện Review Code và tạo Test Plan hoàn chỉnh theo đúng format yêu cầu, dựa trên tất cả thông tin bạn đã thu thập được."));
+    logger.error(`❌ TESTER Agent lỗi LLM Crash: ${errMsg}`);
+    logger.info("🔄 TESTER Crash. Trả quyền phân xử về cho PM.");
+
+    const codeQualityMetrics = parseCodeQualityMetrics(executionLogs);
+    return {
+      testResults: `LỖI API TESTER: ${errMsg}\n\nHãy yêu cầu Tester chạy lại.`,
+      currentPhase: "testing",
+      humanFeedback: "",
+      executionLogs: executionLogs + `\n[SYSTEM ERROR]: TESTER API crashed.`,
+      codeQualityMetrics,
+      testerFeedback: "Tester Agent bị crash, không có feedback.",
+    };
   }
 
-  logger.warn("⚠️ TESTER Agent fallback: gọi LLM không có tools.");
-  const finalResponse = await llm.invoke(messages);
-  const testResults =
-    typeof finalResponse.content === "string"
-      ? finalResponse.content
-      : JSON.stringify(finalResponse.content);
+  // Nếu chạy hết MAX_TOOL_ROUNDS vòng mà vẫn không submit
+  const errorMsg = `LỖI: Tester Agent không hoàn thành nhiệm vụ sau ${MAX_TOOL_ROUNDS} vòng lặp.`;
+  logger.error(`❌ ${errorMsg}`);
 
+  const codeQualityMetrics = parseCodeQualityMetrics(executionLogs);
   return {
-    testResults,
+    testResults: errorMsg,
     currentPhase: "testing",
     humanFeedback: "",
+    executionLogs: executionLogs + `\n[SYSTEM ERROR]: Tester agent exhausted rounds.`,
+    codeQualityMetrics,
+    testerFeedback: "Tester Agent không hoàn thành.",
   };
+}
+
+/**
+ * Trích xuất phần gợi ý fix từ test results.
+ * Tìm các section Bug Report và Recommendation.
+ */
+function extractTesterFeedback(testResults: string): string {
+  const lines = testResults.split("\n");
+  const feedbackLines: string[] = [];
+  let inBugSection = false;
+  let inRecommendation = false;
+
+  for (const line of lines) {
+    if (line.includes("BUG-") || line.includes("Bug Report")) {
+      inBugSection = true;
+    }
+    if (line.includes("Recommendation") || line.includes("Gợi ý fix")) {
+      inRecommendation = true;
+    }
+    if (line.includes("Kết luận") || line.includes("### Test Cases")) {
+      inBugSection = false;
+      inRecommendation = false;
+    }
+
+    if (inBugSection || inRecommendation) {
+      feedbackLines.push(line);
+    }
+  }
+
+  return feedbackLines.length > 0
+    ? feedbackLines.join("\n")
+    : "Không có gợi ý fix cụ thể.";
 }

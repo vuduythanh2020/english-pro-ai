@@ -20,6 +20,18 @@ export const DevTeamState = Annotation.Root({
     default: () => "",
   }),
 
+  /** Lưu trữ mảng toàn bộ User Stories sau khi bóc tách */
+  allUserStories: Annotation<string[]>({
+    reducer: (_, next) => next,
+    default: () => [],
+  }),
+
+  /** Index của User Story hiện tại đang được BA/Dev xử lý */
+  currentUsIndex: Annotation<number>({
+    reducer: (_, next) => next,
+    default: () => 0,
+  }),
+
   /** Tài liệu thiết kế do BA Agent tạo ra */
   designDocument: Annotation<string>({
     reducer: (_, next) => next,
@@ -60,6 +72,42 @@ export const DevTeamState = Annotation.Root({
 
   /** Thông tin cấu trúc dự án, tự động scan khi khởi tạo graph */
   projectContext: Annotation<string>({
+    reducer: (_, next) => next,
+    default: () => "",
+  }),
+
+  /** Output từ execution commands (npm test, tsc, eslint, etc) */
+  executionLogs: Annotation<string>({
+    reducer: (_, next) => next,
+    default: () => "",
+  }),
+
+  /** Metrics về code quality từ tester */
+  codeQualityMetrics: Annotation<{
+    typeErrors: number;
+    lintErrors: number;
+    testsPassed: number;
+    testsFailed: number;
+    testCoverage: number;
+  }>({
+    reducer: (_, next) => next,
+    default: () => ({
+      typeErrors: 0,
+      lintErrors: 0,
+      testsPassed: 0,
+      testsFailed: 0,
+      testCoverage: 0,
+    }),
+  }),
+
+  /** Số lần dev quay lại để fix bugs */
+  devAttempts: Annotation<number>({
+    reducer: (_, next) => next,
+    default: () => 0,
+  }),
+
+  /** Chi tiết feedback từ tester (gợi ý fix cụ thể) */
+  testerFeedback: Annotation<string>({
     reducer: (_, next) => next,
     default: () => "",
   }),

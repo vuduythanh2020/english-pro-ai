@@ -10,7 +10,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "echo 'No linter configured — skipping lint'",
+    "type-check": "tsc --noEmit"
   },
   "keywords": [
     "langgraph",
@@ -27,6 +29,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
+    "pg": "^8.20.0",
     "uuid": "^11.0.0",
     "zod": "^3.23.0"
   },
@@ -34,6 +37,7 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.18.0",
     "@types/uuid": "^10.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",

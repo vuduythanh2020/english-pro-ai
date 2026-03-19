@@ -32,12 +32,57 @@ async function requirementsApproval(
     };
   }
 
-  logger.info("✅ User Stories được duyệt. Chuyển sang BA Agent.");
+  logger.info("✅ User Stories được duyệt. Chuyển sang bộ định tuyến US Router.");
   return {
     humanFeedback: "",
-    nextAgent: "ba_agent",
+    nextAgent: "us_router", // Chuyển luồng sang router để bóc tách và chạy từng cái
     currentPhase: "design",
   };
+}
+
+/**
+ * US Router Node - Tách User Stories và duyệt từng cái một (Agile Iterator)
+ */
+async function usRouterNode(
+  state: DevTeamStateType
+): Promise<Partial<DevTeamStateType>> {
+  // Bóc tách text raw thành mảng nếu mảng hiện tại rỗng
+  let stories = state.allUserStories || [];
+  let currentIndex = state.currentUsIndex || 0;
+
+  if (stories.length === 0 && state.userStories) {
+    stories = state.userStories
+      .split("===STORY_SEPARATOR===")
+      .map(s => s.trim())
+      .filter(s => s.length > 10);
+      
+    logger.info(`🔄 US Router: Đã bóc tách được ${stories.length} User Stories.`);
+  }
+
+  if (currentIndex < stories.length) {
+    const nextStory = stories[currentIndex];
+    logger.info(`📍 Đang đẩy User Story ${currentIndex + 1}/${stories.length} vào Sprint...`);
+    
+    return {
+      allUserStories: stories,
+      currentUsIndex: currentIndex + 1,
+      userStories: nextStory,       // Ghi đè chỉ 1 story hiện hành
+      designDocument: "",           // Reset context cho AI
+      sourceCode: "",
+      testResults: "",
+      executionLogs: "",
+      humanFeedback: "",
+      nextAgent: "ba_agent",
+      currentPhase: "design"
+    };
+  } else {
+    logger.info(`✅ Toàn bộ ${stories.length} User Stories đã hoàn thành! Release Graph.`);
+    return {
+      allUserStories: stories,
+      nextAgent: "done",
+      currentPhase: "done"
+    };
+  }
 }
 
 /**
@@ -141,10 +186,9 @@ async function releaseApproval(
     };
   }
 
-  logger.info("✅ Release approved! Feature hoàn thành.");
+  logger.info("✅ Release approved! Trở về luồng US Router để xử lý Story tiếp theo.");
   return {
-    currentPhase: "done",
-    nextAgent: "done",
+    nextAgent: "us_router",
   };
 }
 
@@ -155,6 +199,8 @@ function routeAfterApproval(state: DevTeamStateType): string {
   switch (state.nextAgent) {
     case "po_agent":
       return "po_agent";
+    case "us_router":
+      return "us_router";
     case "ba_agent":
       return "ba_agent";
     case "dev_agent":
@@ -198,6 +244,7 @@ export function buildDevTeamGraph() {
 
     // Agent nodes
     .addNode("po_agent", poAgentNode)
+    .addNode("us_router", usRouterNode)
     .addNode("ba_agent", baAgentNode)
     .addNode("dev_agent", devAgentNode)
     .addNode("tester_agent", testerAgentNode)
@@ -215,10 +262,16 @@ export function buildDevTeamGraph() {
     // PO → Requirements Approval
     .addEdge("po_agent", "requirements_approval")
 
-    // Requirements Approval → route (BA or PO again)
+    // Requirements Approval → route (US Router or PO again)
     .addConditionalEdges("requirements_approval", routeAfterApproval, [
       "po_agent",
+      "us_router",
+    ])
+
+    // US Router → route (BA or Done)
+    .addConditionalEdges("us_router", routeAfterApproval, [
       "ba_agent",
+      "__end__",
     ])
 
     // BA → Design Approval
@@ -243,10 +296,10 @@ export function buildDevTeamGraph() {
     // TESTER → Release Approval
     .addEdge("tester_agent", "release_approval")
 
-    // Release Approval → route (Done or DEV again)
+    // Release Approval → route (US Router or DEV again)
     .addConditionalEdges("release_approval", routeAfterApproval, [
       "dev_agent",
-      "__end__",
+      "us_router",
     ]);
 
   return graph.compile({ checkpointer });

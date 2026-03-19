@@ -1,0 +1,166 @@
+{
+  "model": "claude-opus-4-6",
+  "temperature": 0.2,
+  "top_k": -1,
+  "top_p": -1,
+  "stream": false,
+  "max_tokens": 16384,
+  "tools": [
+    {
+      "name": "read_project_file",
+      "description": "Đọc nội dung một file mã nguồn trong dự án. Chỉ đọc được file trong thư mục src/ hoặc frontend/. Dùng để hiểu code hiện tại trước khi viết code mới.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "filePath": {
+            "type": "string",
+            "description": "Đường dẫn file cần đọc, tương đối từ root dự án. Ví dụ: src/api/routes.ts"
+          }
+        },
+        "required": [
+          "filePath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "list_directory",
+      "description": "Xem danh sách file và thư mục con trong một thư mục của dự án. Chỉ xem được trong thư mục src/ hoặc frontend/. Dùng để hiểu cấu trúc dự án trước khi viết code.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dirPath": {
+            "type": "string",
+            "description": "Đường dẫn thư mục cần xem, tương đối từ root dự án. Ví dụ: src/api hoặc src/dev-team/agents"
+          }
+        },
+        "required": [
+          "dirPath"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "read_file_full",
+      "description": "Đọc nội dung file đầy đủ (không giới hạn dòng). Hỗ trợ pagination với offset/limit. Chỉ đọc được file trong thư mục src/ hoặc frontend/.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "filePath": {
+            "type": "string",
+            "description": "Đường dẫn file cần đọc, tương đối từ root dự án. Ví dụ: src/api/routes.ts"
+          },
+          "offset": {
+            "type": "number",
+            "description": "Số dòng bắt đầu (Ví dụ: 0)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Số dòng cần đọc (Truyền 0 để đọc tới cuối file)"
+          }
+        },
+        "required": [
+          "filePath",
+          "offset",
+          "limit"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Ghi/tạo file mới. Chỉ được ghi file trong thư mục src/ hoặc frontend/. Nếu file đã tồn tại sẽ bị overwrite.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "filePath": {
+            "type": "string",
+            "description": "Đường dẫn file cần ghi, tương đối từ root dự án. Ví dụ: src/api/routes.ts"
+          },
+          "content": {
+            "type": "string",
+            "description": "Nội dung file cần ghi"
+          }
+        },
+        "required": [
+          "filePath",
+          "content"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "execute_command",
+      "description": "Chạy lệnh CLI (npm test, tsc, eslint, etc). Chỉ cho phép chạy các lệnh an toàn như: npm test, npm run lint, tsc --noEmit, eslint, jest, vitest.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Lệnh cần chạy. Ví dụ: npm test, tsc --noEmit, npm run lint"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Thư mục làm việc (Ví dụ: '.' cho root dự án, hoặc 'frontend')"
+          }
+        },
+        "required": [
+          "command",
+          "cwd"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "get_project_structure",
+      "description": "Xem cấu trúc dự án dưới dạng tree view. Giúp agent hiểu toàn bộ cấu trúc thư mục.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "maxDepth": {
+            "type": "number",
+            "description": "Độ sâu tối đa của tree (Ví dụ: 3)"
+          }
+        },
+        "required": [
+          "maxDepth"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "submit_feature",
+      "description": "Gọi kết thúc nhiệm vụ. CHÍNH THỨC NỘP BÀI TỚI PM. CHỈ GỌI KHI ĐÃ HOÀN THÀNH TOÀN BỘ CODE BẰNG WRITE_FILE VÀ VERIFY THÀNH CÔNG.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "report": {
+            "type": "string",
+            "description": "Báo cáo chi tiết các file đã ghi và giải thích kỹ thuật bằng tiếng Việt."
+          }
+        },
+        "required": [
+          "report"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    }
+  ],
+  "thinking": {
+    "type": "disabled"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "Nhiệm vụ: Triển khai mã nguồn cho Feature Request dựa trên Design Doc.\nYÊU CẦU: BẮT BUỘC dùng tool 'write_file' để ghi code. Tuyệt đối không in text code ra màn hình.\nKhi đã ghi xong TẤT CẢ các file, BẮT BUỘC CHẠY tool 'submit_feature' để nộp bài.\n\n## User Stories\n# 📋 USER STORIES: Hệ thống Audit Log & Tracking cho Dev Team Workflow\n\nDựa trên phân tích yêu cầu và bối cảnh dự án hiện tại, tôi nhận thấy:\n\n- Dự án đã có sẵn file `src/dev-team/audit-log.repository.ts` — cho thấy đã có phần nào cơ sở cho audit log, nhưng cần xây dựng hoàn chỉnh hệ thống tracking tự động xuyên suốt workflow.\n- Database sử dụng PostgreSQL (có dependency `pg` và file `database.config.ts`).\n- Workflow chạy trên LangGraph JS với các phase: requirements → design → development → testing → done.\n\nDưới đây là các User Stories được sắp xếp theo thứ tự tuyến tính cần thực hiện:\n\n---\n\n**US-01: Thiết kế và tạo bảng Database cho Audit Log**\n- **As a** Product Manager\n- **I want** hệ thống có bảng database chuyên dụng lưu trữ toàn bộ lịch sử hoạt động của Dev Team workflow\n- **So that** mọi dữ liệu diễn biến được lưu trữ có cấu trúc, sẵn sàng cho việc truy vấn và xây dựng Dashboard sau này\n\n**Acceptance Criteria:**\n- [ ] AC1: Tạo bảng `dev_team_sessions` trong PostgreSQL với các cột: `session_id` (PK, UUID), `feature_request` (TEXT), `status` (VARCHAR - in_progress/completed/rejected), `created_at` (TIMESTAMP), `completed_at` (TIMESTAMP nullable), `total_duration_ms` (INTEGER nullable)\n- [ ] AC2: Tạo bảng `dev_team_audit_logs` với các cột: `log_id` (PK, UUID), `session_id` (FK → dev_team_sessions), `phase` (VARCHAR - requirements/design/development/testing/done), `agent_name` (VARCHAR - po_agent/ba_agent/dev_agent/tester_agent), `action` (VARCHAR - started/completed/approved/rejected), `input_summary` (TEXT - tóm tắt input đầu vào của agent), `output_summary` (TEXT - tóm tắt output của agent), `human_feedback` (TEXT nullable - feedback từ PM tại approval gate), `duration_ms` (INTEGER - thời gian xử lý của phase đó), `created_at` (TIMESTAMP DEFAULT NOW())\n- [ ] AC3: Tạo index trên các cột `session_id`, `phase`, `agent_name`, `created_at` để tối ưu truy vấn cho Dashboard\n- [ ] AC4: Viết migration script hoặc hàm khởi tạo bảng trong file `src/config/database.config.ts` hoặc file migration riêng, sử dụng `pg` driver hiện có\n- [ ] AC5: Đảm bảo quan hệ FK giữa `dev_team_audit_logs.session_id` và `dev_team_sessions.session_id` có ON DELETE CASCADE\n\n**Priority:** High\n**Story Points:** 5\n## Design Document\nGiờ tôi đã thu thập đủ thông tin về codebase. Dưới đây là tài liệu phân tích và thiết kế chi tiết:\n\n---\n\n# 📄 TÀI LIỆU PHÂN TÍCH & THIẾT KẾ CHI TIẾT\n## US-01: Thiết kế và tạo bảng Database cho Audit Log\n\n**Phiên bản:** 1.0  \n**Ngày tạo:** Hiện tại  \n**Tác giả:** BA Agent  \n**Trạng thái:** Chờ duyệt\n\n---\n\n## 1. PHÂN TÍCH NGHIỆP VỤ\n\n### 1.1 Tổng quan hiện trạng\n\nQua phân tích codebase hiện tại, tôi nhận thấy:\n\n1. **`src/dev-team/audit-log.repository.ts`** — File repository đã được viết HOÀN CHỈNH với đầy đủ các hàm CRUD cho hai bảng: `dev_team_audit_logs` và `dev_team_workflow_runs`. Tuy nhiên, **chưa có migration SQL nào** để tạo các bảng này trong database.\n\n2. **`src/config/database.config.ts`** — Đã có sẵn cơ chế migration tự động: hàm `runMigrations()` sẽ đọc toàn bộ file `.sql` trong thư mục `src/migrations/` (sắp xếp theo tên file) và chạy khi server khởi động qua `initializeDatabase()`. Tuy nhiên, **thư mục `src/migrations/` chưa tồn tại**.\n\n3. **`src/index.ts`** — Server đã gọi `initializeDatabase()` khi startup, và graceful handle lỗi database (server vẫn chạy nếu DB lỗi).\n\n4. **Mapping giữa User Stories và code hiện tại** — User Stories yêu cầu 2 bảng `dev_team_sessions` và `dev_team_audit_logs`, nhưng code repository hiện tại đã dùng tên `dev_team_workflow_runs` (thay vì `dev_team_sessions`) và schema columns khác một chút so với US-01. **Đây là điểm mâu thuẫn cần giải quyết.**\n\n### 1.2 Phân tích GAP — So sánh US-01 với Code hiện tại\n\n| Khía cạnh | US-01 yêu cầu | Code Repository hiện tại | GAP |\n|---|---|---|---|\n| **Bảng sessions** | `dev_team_sessions` | Dùng tên `dev_team_workflow_runs` | Tên khác nhau — cần thống nhất |\n| **PK sessions** | `session_id` (UUID) | `thread_id` (text, dạng `thread_xxx`) | Kiểu và tên cột khác |\n| **Cột status** | `status` (VARCHAR: in_progress/completed/rejected) | `final_status` (VARCHAR: in_progress/completed/failed) | Tên cột và giá trị enum khác — `rejected` vs `failed` |\n| **Cột duration** | `total_duration_ms` (INTEGER) | `total_duration_ms` (INTEGER) | ✅ Khớp |\n| **Cột đặc biệt** | Không có | `total_revisions` (INTEGER), `feature_request` (TEXT) | Code có thêm cột hữu ích |\n| **Bảng audit_logs** | `dev_team_audit_logs` | `dev_team_audit_logs` | ✅ Khớp tên |\n| **FK audit_logs** | `session_id` FK → `dev_team_sessions` | `run_id` (text, không rõ FK) | Tên cột khác, cần tạo FK |\n| **Cột agent** | `agent_name` (po_agent/ba_agent/dev_agent/tester_agent) | `agent` (po/ba/dev/tester/pm) | Tên cột và giá trị khác |\n| **Cột action** | `action` (started/completed/approved/rejected) | `event_type` (phase_start/phase_complete/approval_request/approved/rejected/feedback) | Tên cột khác, code phong phú hơn |\n| **Cột riêng US-01** | `input_summary`, `output_summary`, `human_feedback`, `duration_ms` | Dùng `payload` (JSONB), `duration_ms`, `status` | Code gộp input/output vào payload JSONB |\n\n### 1.3 Quyết định thiết kế — Chiến lược hòa giải\n\n**Nguyên tắc:** Ưu tiên giữ **tương thích ngược** với code repository đã viết, đồng thời đáp ứng mọi Acceptance Criteria của US-01. Cụ thể:\n\n1. **Tên bảng sessions:** Dùng `dev_team_workflow_runs` (theo code hiện tại) và tạo **VIEW** `dev_team_sessions` để đáp ứng US-01. Lý do: code repository đã viết hàng chục hàm dùng tên `dev_team_workflow_runs`, sửa sẽ tốn effort không cần thiết.\n\n2. **PK sessions:** Dùng `thread_id` (TEXT, dạng UUID prefix `thread_`) vì graph của LangGraph dùng thread_id làm key chính cho checkpointer. Đây là thiết kế hợp lý hơn `session_id UUID` vì cho phép mapping trực tiếp với LangGraph state.\n\n3. **Bảng audit_logs:** Tạo theo đúng schema mà code repository đang sử dụng (các cột `run_id`, `phase`, `agent`, `event_type`, `status`, `duration_ms`, `payload` JSONB). Bổ sung thêm các cột `input_summary`, `output_summary`, `human_feedback` theo US-01 để tối ưu truy vấn (tránh phải parse JSONB).\n\n4. **Index:** Tạo theo đúng AC3 + bổ sung index cho `event_type` và `created_at`.\n\n5. **FK & CASCADE:** Đúng theo AC5.\n\n### 1.4 Use Cases chi tiết\n\n**UC-01: Khởi tạo Database Schema khi Server Startup**\n- **Actor:** Server (tự động)\n- **Trigger:** Khi `startServer()` gọi `initializeDatabase()`\n- **Flow:**\n  1. Kết nối đến PostgreSQL\n  2. `runMigrations()` quét thư mục `src/migrations/`\n  3. Đọc file `001_create_audit_tables.sql`\n  4. Chạy các câu lệnh `CREATE TABLE IF NOT EXISTS`\n  5. Tạo indexes\n  6. Log kết quả\n\n**UC-02: Ghi bản ghi Workflow Run khi bắt đầu workflow**\n- **Actor:** `dev-team.routes.ts` — endpoint POST `/api/dev-team/start`\n- **Flow:** Sau khi tạo `threadId`, gọi `createWorkflowRun(threadId, featureRequest)`\n- **Postcondition:** Bản ghi mới trong `dev_team_workflow_runs` với `final_status = 'in_progress'`\n\n**UC-03: Ghi Audit Log Entry khi agent hoàn thành**\n- **Actor:** Mỗi agent node hoặc approval gate trong `graph.ts`\n- **Flow:**"
+    }
+  ],
+  "system": "Bạn là Developer Agent trong team phát triển \"EnglishPro AI\".\n\n## HỆ THỐNG DEV-TEAM WORKFLOW (LangGraph)\nBạn là MỘT NODE trong LangGraph workflow. Toàn bộ quy trình phát triển tính năng được thực thi như một graph:\n\n### Flow thực thi\n```\n__start__ → inject_context → po_agent → requirements_approval (PM duyệt)\n  → ba_agent → design_approval (PM duyệt)\n  → dev_agent → code_review (PM review)\n  → tester_agent → release_approval (PM duyệt)\n  → __end__ (HOÀN TẤT)\n```\n\n### Thuật ngữ quan trọng\n- **\"Hoàn tất quy trình\"** = khi graph chạy đến `__end__` (release_approval được approve)\n- **\"Yêu cầu tính năng\"** = featureRequest từ PM, là input đầu vào của graph\n- **\"Duyệt\" / \"Approve\"** = PM dùng interrupt() để approve/reject tại mỗi approval gate\n- **\"Quay lại\"** = graph route ngược về agent trước đó khi bị reject\n\n### State của workflow (DevTeamState)\n- `featureRequest`: string — yêu cầu tính năng ban đầu từ PM\n- `userStories`: string — do PO Agent tạo\n- `designDocument`: string — do BA Agent tạo\n- `sourceCode`: string — do DEV Agent tạo\n- `testResults`: string — do TESTER Agent tạo\n- `currentPhase`: \"requirements\" | \"design\" | \"development\" | \"testing\" | \"done\"\n- `humanFeedback`: string — feedback từ PM tại approval gate\n- `projectContext`: string — cấu trúc dự án, tự động scan\n\n### Lưu ý khi xử lý yêu cầu\n- Nếu PM yêu cầu tính năng liên quan đến BẢN THÂN workflow (graph, state, agents), hãy hiểu đó là thay đổi code trong thư mục `src/dev-team/`\n- Nếu PM yêu cầu tính năng cho SẢN PHẨM (EnglishPro AI), hãy hiểu đó là thay đổi code trong `src/tutor/`, `src/api/`, hoặc `frontend/`\n\nVai trò của bạn:\n1. Nhận tài liệu thiết kế đã được duyệt\n2. Viết source code TypeScript chất lượng cao (TUYỆT ĐỐI KHÔNG VIẾT UNIT TEST, việc đó của Tester)\n3. TỰ VERIFY code qua tsc trước khi submit\n\n## TOOLS CÓ SẴN (GỌI QUA FUNCTION CALL API)\n\n### Codebase Tools (đọc hiểu dự án)\n- `list_directory` — Xem danh sách file/thư mục. Params: {\"dirPath\": string}\n- `read_project_file` — Đọc nội dung file (tối đa 500 dòng). Params: {\"filePath\": string}\n- `read_file_full` — Đọc file đầy đủ với pagination. Params: {\"filePath\": string, \"offset\": number, \"limit\": number}\n- `get_project_structure` — Xem tree view cấu trúc dự án. Params: {\"maxDepth\": number}\n\n### Execution Tools (viết và kiểm tra code)\n- `write_file` — Ghi/tạo file mới. Params: {\"filePath\": string, \"content\": string}\n- `execute_command` — Chạy lệnh CLI (npm test, tsc, eslint). Params: {\"command\": string, \"cwd\": string}\n- `submit_feature` — Nộp báo cáo hoàn thành. Params: {\"report\": string}\n\n## QUY TRÌNH LÀM VIỆC BẮT BUỘC\n\n### Bước 1: Khám phá codebase\n- Dùng `get_project_structure` để hiểu cấu trúc\n- Dùng `read_project_file` để đọc code liên quan\n- Hiểu coding patterns và conventions hiện tại\n\n### Bước 2: Viết code\n- Dùng `write_file` để tạo/sửa file\n- Follow đúng style và conventions của dự án\n- Tạo types/interfaces rõ ràng\n\n### Bước 3: Verify code (BẮT BUỘC)\n- Chạy `tsc --noEmit` để kiểm tra type errors\n- Nếu có lỗi → sửa và chạy lại\n- Chỉ submit khi không còn type errors\n\n### Bước 4: Tổng kết\n- Liệt kê tất cả file đã tạo/sửa\n- Giải thích các quyết định kỹ thuật quan trọng\n\nQuy tắc coding:\n- TypeScript strict mode\n- ESM modules (import/export)\n- Sử dụng LangGraph JS cho agent workflows\n- Express.js cho API\n- React + Vite cho frontend\n- Code sạch, có comments giải thích\n- Luôn tạo types/interfaces rõ ràng\n- Error handling đầy đủ\n\nQUAN TRỌNG VỀ CÁCH GỌI TOOL:\n- BẮT BUỘC sử dụng Function Call API (native tool calling) để gọi tools.\n- TUYỆT ĐỐI KHÔNG in code ra dưới dạng markdown text. Mọi code PHẢI được ghi qua tool `write_file`.\n- TUYỆT ĐỐI KHÔNG trả lời suông mà không gọi tool nào.\n- Sau khi ghi xong TẤT CẢ file và verify (tsc --noEmit), BẮT BUỘC gọi `submit_feature` để nộp bài.\n\nLuôn viết bằng tiếng Việt khi báo cáo.\n\n## BỐI CẢNH DỰ ÁN HIỆN TẠI\n## Dự án: englishpro-ai\nMô tả: EnglishPro AI - English learning platform for professionals using LangGraph JS multi-agent system\n\n### Dependencies chính\n@langchain/anthropic, @langchain/core, @langchain/langgraph, @langchain/openai, cors, dotenv, express, pg, uuid, zod\n\n### Cấu trúc mã nguồn (src/)\n📁 api/\n  📄 chat.routes.ts\n  📄 dev-team.routes.ts\n  📄 middleware.ts\n📁 config/\n  📄 database.config.ts\n  📄 env.ts\n📁 dev-team/\n  📁 agents/\n    📄 ba.agent.ts\n    📄 dev.agent.ts\n    📄 po.agent.ts\n    📄 tester.agent.ts\n  📁 prompts/\n    📄 dev-team.prompts.ts\n  📁 tools/\n    📄 codebase-tools.ts\n    📄 execution-tools.ts\n  📄 audit-log.repository.ts\n  📄 graph.ts\n  📄 project-context.ts\n  📄 state.ts\n📁 tutor/\n  📁 agents/\n    📄 assessment.agent.ts\n    📄 business.agent.ts\n    📄 grammar.agent.ts\n    📄 pronunciation.agent.ts\n    📄 tutor.agent.ts\n    📄 vocabulary.agent.ts\n  📁 prompts/\n    📄 tutor.prompts.ts\n  📄 graph.ts\n  📄 state.ts\n📁 utils/\n  📄 helpers.ts\n  📄 logger.ts\n📄 index.ts\n📄 test-cli.ts\n\n### Coding Conventions\n- TypeScript strict mode, ESM modules\n- File names: kebab-case (ví dụ: po.agent.ts)\n- Sử dụng LangGraph JS cho agent workflows\n- Export named functions, không dùng default export\n- Đường dẫn import dùng đuôi .js"
+}
