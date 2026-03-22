@@ -101,3 +101,62 @@ ${structure}
   logger.info(`📋 Project context đã được tạo (${context.length} ký tự)`);
   return context;
 }
+
+/**
+ * So sánh 2 project context strings và trả về bản tóm tắt thay đổi.
+ * Dùng bởi Context Sync Agent để phát hiện file mới/xoá trong src/.
+ *
+ * @returns Object chứa danh sách thay đổi và flag hasSignificantChanges
+ */
+export function diffProjectContext(
+  oldContext: string,
+  newContext: string
+): {
+  addedLines: string[];
+  removedLines: string[];
+  changeSummary: string;
+  hasSignificantChanges: boolean;
+} {
+  const oldLines = new Set(
+    oldContext
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("📁") || l.startsWith("📄"))
+  );
+  const newLines = new Set(
+    newContext
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("📁") || l.startsWith("📄"))
+  );
+
+  const addedLines = [...newLines].filter((l) => !oldLines.has(l));
+  const removedLines = [...oldLines].filter((l) => !newLines.has(l));
+
+  const parts: string[] = [];
+  if (addedLines.length > 0) {
+    parts.push(`### Files/Dirs Added\n${addedLines.map((l) => `+ ${l}`).join("\n")}`);
+  }
+  if (removedLines.length > 0) {
+    parts.push(`### Files/Dirs Removed\n${removedLines.map((l) => `- ${l}`).join("\n")}`);
+  }
+
+  const changeSummary =
+    parts.length > 0
+      ? parts.join("\n\n")
+      : "Không có thay đổi nào trong cấu trúc dự án.";
+
+  // Đánh dấu significant nếu có thay đổi trong src/dev-team/ (workflow code)
+  const devTeamChanged =
+    addedLines.some((l) => l.includes("dev-team")) ||
+    removedLines.some((l) => l.includes("dev-team"));
+
+  const hasSignificantChanges =
+    devTeamChanged || addedLines.length + removedLines.length >= 3;
+
+  logger.info(
+    `🔄 Context diff: +${addedLines.length} -${removedLines.length} files, significant=${hasSignificantChanges}`
+  );
+
+  return { addedLines, removedLines, changeSummary, hasSignificantChanges };
+}

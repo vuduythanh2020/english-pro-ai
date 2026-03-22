@@ -176,9 +176,36 @@ export const executeCommandTool = tool(
 
             return output || "✅ Lệnh chạy thành công (không có output)";
         } catch (error: unknown) {
-            const stderr = error instanceof Error ? error.message : String(error);
-            logger.warn(`⚠️ Lệnh thất bại: ${command}`);
-            return `❌ Lệnh thất bại:\n${stderr}`;
+            // execSync throws an object with stdout, stderr, status khi exit code != 0
+            const execError = error as { stdout?: string | Buffer; stderr?: string | Buffer; status?: number; message?: string };
+            const stdout = execError.stdout ? execError.stdout.toString().trim() : "";
+            const stderr = execError.stderr ? execError.stderr.toString().trim() : "";
+            const exitCode = execError.status ?? -1;
+            const fallbackMsg = error instanceof Error ? error.message : String(error);
+
+            logger.warn(`⚠️ Lệnh thất bại: ${command} (exit code: ${exitCode})`);
+
+            // Build chi tiết output để LLM có thể parse và sửa lỗi
+            const MAX_OUTPUT_CHARS = 8000;
+            let detail = `❌ Lệnh thất bại (exit code ${exitCode}): ${command}\n`;
+
+            if (stdout) {
+                const truncStdout = stdout.length > MAX_OUTPUT_CHARS
+                    ? stdout.slice(-MAX_OUTPUT_CHARS) + `\n...(truncated, giữ ${MAX_OUTPUT_CHARS} chars cuối)`
+                    : stdout;
+                detail += `\n[STDOUT]\n${truncStdout}\n`;
+            }
+            if (stderr) {
+                const truncStderr = stderr.length > MAX_OUTPUT_CHARS
+                    ? stderr.slice(-MAX_OUTPUT_CHARS) + `\n...(truncated, giữ ${MAX_OUTPUT_CHARS} chars cuối)`
+                    : stderr;
+                detail += `\n[STDERR]\n${truncStderr}\n`;
+            }
+            if (!stdout && !stderr) {
+                detail += `\n[ERROR MESSAGE]\n${fallbackMsg}\n`;
+            }
+
+            return detail;
         }
     },
     {

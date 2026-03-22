@@ -14,6 +14,7 @@ import {
   listDirectoryTool,
 } from "../tools/codebase-tools.js";
 import { logger } from "../../utils/logger.js";
+import { startPhaseTracking, completePhaseTracking } from "../utils/tracking-helper.js";
 
 // Khởi tạo model Claude cho BA
 const llm = new ChatAnthropic({
@@ -58,12 +59,24 @@ async function executeToolCall(
  *
  * Có khả năng đọc codebase qua tools để hiểu dự án hiện tại
  * trước khi tạo design document.
+ *
+ * US-01: Tích hợp Phase Tracking — ghi nhận phase bắt đầu/kết thúc vào DB.
  */
 export async function baAgentNode(
   state: DevTeamStateType
 ): Promise<Partial<DevTeamStateType>> {
   const humanFeedback = state.humanFeedback;
   const projectContext = state.projectContext;
+
+  // --- Phase Tracking: START (AC1, AC2, AC3, AC5) ---
+  const { phaseId } = await startPhaseTracking({
+    workflowRunId: state.workflowRunId,
+    phaseName: "design",
+    agentName: "ba",
+    inputSummary: humanFeedback
+      ? `[REVISION] Feedback: ${humanFeedback}`
+      : state.userStories,
+  });
 
   // System prompt + project context
   const systemPrompt = projectContext
@@ -109,10 +122,14 @@ export async function baAgentNode(
           continue;
         }
 
+        // --- Phase Tracking: COMPLETE ---
+        await completePhaseTracking(state.workflowRunId, phaseId, "ba", designDocument);
+
         return {
           designDocument,
           currentPhase: "design",
           humanFeedback: "",
+          currentPhaseId: phaseId,
         };
       }
 
@@ -153,9 +170,13 @@ export async function baAgentNode(
       ? finalResponse.content
       : JSON.stringify(finalResponse.content);
 
+  // --- Phase Tracking: COMPLETE (fallback path) ---
+  await completePhaseTracking(state.workflowRunId, phaseId, "ba", designDocument);
+
   return {
     designDocument,
     currentPhase: "design",
     humanFeedback: "",
+    currentPhaseId: phaseId,
   };
 }

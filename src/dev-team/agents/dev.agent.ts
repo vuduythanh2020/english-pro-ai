@@ -11,6 +11,7 @@ import type { DevTeamStateType } from "../state.js";
 import { allDevTools } from "../tools/codebase-tools.js";
 import { executeToolCall, buildToolErrorMessage } from "../utils/execute-tool.js";
 import { logger } from "../../utils/logger.js";
+import { startPhaseTracking, completePhaseTracking } from "../utils/tracking-helper.js";
 
 // Khởi tạo model Claude cho DEV
 const llm = new ChatAnthropic({
@@ -140,6 +141,8 @@ async function invokeWithRetry(
  * - Chạy tsc --noEmit, npm test, eslint để verify code
  * - Tự động fix lỗi nếu phát hiện qua execution
  * - Retry khi gặp 502/503/429 từ API
+ *
+ * US-01: Tích hợp Phase Tracking — ghi nhận phase bắt đầu/kết thúc vào DB.
  */
 export async function devAgentNode(
   state: DevTeamStateType
@@ -147,6 +150,16 @@ export async function devAgentNode(
   const humanFeedback = state.humanFeedback;
   const projectContext = state.projectContext;
   const devAttempts = (state.devAttempts || 0) + 1;
+
+  // --- Phase Tracking: START (AC1, AC2, AC3, AC5) ---
+  const { phaseId } = await startPhaseTracking({
+    workflowRunId: state.workflowRunId,
+    phaseName: "development",
+    agentName: "dev",
+    inputSummary: humanFeedback
+      ? `[REVISION] Feedback: ${humanFeedback}. TestResults: ${(state.testResults || "").slice(0, 200)}`
+      : state.designDocument,
+  });
 
   // System prompt + project context
   const systemPrompt = projectContext
@@ -219,10 +232,11 @@ Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối kh
     new HumanMessage(userMessage),
   ];
 
-  const MAX_TOOL_ROUNDS = 12; // Cho phép 12 vòng
+  const MAX_TOOL_ROUNDS = 15; // Tăng lên 15 vòng để có room cho error-fix cycles
   const MAX_TOOLS_PER_ROUND = 5;
   let executionLogs = "";
   let hasCalledWriteFile = false;
+  const writtenFiles = new Set<string>(); // Track file đã write để phân biệt lỗi "do mình" vs "pre-existing"
 
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -347,7 +361,11 @@ Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối kh
           continue;
         }
 
-        if (tc.name === "write_file") hasCalledWriteFile = true;
+        if (tc.name === "write_file") {
+          hasCalledWriteFile = true;
+          const filePath = (tc.args as any).filePath;
+          if (filePath) writtenFiles.add(filePath);
+        }
 
         // Bắt sự kiện nộp bài
         if (tc.name === "submit_feature") {
@@ -379,6 +397,35 @@ Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối kh
         }
       }
 
+      // --- Error-aware nudge: phát hiện execute_command fail → guide LLM sửa lỗi ---
+      // Scan tool results vừa thực thi trong round này để detect command failures
+      const lastMessages = messages.slice(-callCount);
+      const hasCommandFail = lastMessages.some(
+        (m) => m instanceof ToolMessage && typeof m.content === "string" && m.content.startsWith("❌ Lệnh thất bại")
+      );
+
+      if (hasCommandFail && !isFinished) {
+        const writtenFilesList = writtenFiles.size > 0
+          ? `Danh sách file bạn đã tạo/sửa: ${[...writtenFiles].join(", ")}`
+          : "Bạn chưa write file nào.";
+
+        const nudgeMsg = `⚠️ HỆ THỐNG PHÁT HIỆN LỆNH THẤT BẠI TRONG VÒNG NÀY.
+
+QUY TRÌNH SỬA LỖI BẮT BUỘC:
+1. ĐỌC KỸ error output ở trên — tìm pattern: \`file(line,col): error TSxxxx: message\`
+2. XÁC ĐỊNH file lỗi:
+   - ${writtenFilesList}
+   - Nếu file lỗi NẰM TRONG danh sách trên → BẮT BUỘC SỬA NGAY bằng \`read_project_file\` rồi \`write_file\`
+   - Nếu file lỗi KHÔNG nằm trong danh sách (pre-existing) → GHI NHẬN, tiếp tục công việc
+3. Sau khi sửa → chạy lại \`tsc --noEmit\` để verify
+4. TUYỆT ĐỐI KHÔNG: retry cùng command mà không sửa gì, hoặc bỏ qua lỗi rồi submit
+
+HÃY BẮT ĐẦU SỬA LỖI NGAY.`;
+
+        logger.info(`🔔 [DEV] Injecting error nudge (round ${round + 1}). Written files: [${[...writtenFiles].join(", ")}]`);
+        messages.push(new HumanMessage(nudgeMsg));
+      }
+
       // Nộp bài
       if (isFinished) {
         if (!hasCalledWriteFile) {
@@ -389,12 +436,16 @@ Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối kh
           continue;
         }
 
+        // --- Phase Tracking: COMPLETE (normal submit) ---
+        await completePhaseTracking(state.workflowRunId, phaseId, "dev", finalReport);
+
         return {
           sourceCode: finalReport,
           currentPhase: "development",
           humanFeedback: "",
           devAttempts,
           executionLogs,
+          currentPhaseId: phaseId,
         };
       }
     }
@@ -402,12 +453,20 @@ Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối kh
     const errMsg = error instanceof Error ? error.message : String(error);
     logger.error(`❌ DEV Agent lỗi LLM Crash: ${errMsg}`);
     logger.info("🔄 LLM Crash. Trả quyền phân xử về cho PM.");
+
+    // --- Phase Tracking: COMPLETE (LLM crash path) ---
+    await completePhaseTracking(
+      state.workflowRunId, phaseId, "dev",
+      `LỖI API: ${errMsg}`
+    );
+
     return {
       sourceCode: `LỖI API: ${errMsg}\n\nHãy yêu cầu Dev chạy lại.`,
       currentPhase: "development",
       humanFeedback: "",
       devAttempts,
       executionLogs: executionLogs + `\n[SYSTEM ERROR]: API Provider crashed.`,
+      currentPhaseId: phaseId,
     };
   }
 
@@ -415,11 +474,15 @@ Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối kh
   const errorMsg = `LỖI: Dev Agent không hoàn thành nhiệm vụ sau ${MAX_TOOL_ROUNDS} vòng lặp. Agent không gọi write_file hoặc không gọi submit_feature.`;
   logger.error(`❌ ${errorMsg}`);
 
+  // --- Phase Tracking: COMPLETE (timeout/exhausted path) ---
+  await completePhaseTracking(state.workflowRunId, phaseId, "dev", errorMsg);
+
   return {
     sourceCode: errorMsg,
     currentPhase: "development",
     humanFeedback: "",
     devAttempts,
     executionLogs: executionLogs + `\n[SYSTEM ERROR]: Agent failed to write files.`,
+    currentPhaseId: phaseId,
   };
 }

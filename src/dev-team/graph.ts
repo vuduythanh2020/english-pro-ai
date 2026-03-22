@@ -4,8 +4,97 @@ import { poAgentNode } from "./agents/po.agent.js";
 import { baAgentNode } from "./agents/ba.agent.js";
 import { devAgentNode } from "./agents/dev.agent.js";
 import { testerAgentNode } from "./agents/tester.agent.js";
+import { contextSyncAgentNode } from "./agents/context-sync.agent.js";
 import { generateProjectContext } from "./project-context.js";
 import { logger } from "../utils/logger.js";
+import {
+  createWorkflowRun,
+  updateWorkflowRunStatus,
+  createWorkflowApproval,
+  updateWorkflowPhaseStatus,
+  completeWorkflowPhase,
+} from "./database/workflow-history.repository.js";
+import type { ApprovalType } from "./database/types.js";
+
+// US-03: Import Event Logger helpers
+import {
+  logWorkflowStarted,
+  logWorkflowCompleted,
+  logApprovalRequest,
+  logApprovalDecision,
+} from "./utils/event-logger.js";
+
+// ============================================================================
+// US-02: Approval/Rejection Tracking Helper
+// ============================================================================
+
+/**
+ * Ghi nhận quyết định approve/reject vào database (US-02).
+ *
+ * Thiết kế DRY: gọi từ 4 approval gate functions thay vì duplicate logic.
+ * Graceful degradation: mọi lỗi DB chỉ log warning, KHÔNG throw (AC4).
+ * Guard clause: skip khi thiếu workflowRunId hoặc currentPhaseId (AC5).
+ *
+ * @param params.workflowRunId - UUID workflow run từ state
+ * @param params.currentPhaseId - UUID phase hiện tại từ state
+ * @param params.approvalType - Loại approval gate
+ * @param params.decision - "approved" | "rejected"
+ * @param params.feedback - Feedback từ PM (optional)
+ * @param params.outputSummary - Tóm tắt output khi approved (optional)
+ * @param params.rejectedStatus - Status khi reject: "rejected" (default) hoặc "revised"
+ */
+async function trackApprovalDecision(params: {
+  workflowRunId: string;
+  currentPhaseId: string;
+  approvalType: ApprovalType;
+  decision: "approved" | "rejected";
+  feedback?: string;
+  outputSummary?: string;
+  rejectedStatus?: "rejected" | "revised";
+}): Promise<void> {
+  // --- AC5: Guard clause ---
+  if (!params.workflowRunId || !params.currentPhaseId) {
+    logger.warn(
+      `⚠️ [ApprovalTracking] Skipping: workflowRunId="${params.workflowRunId}", ` +
+      `currentPhaseId="${params.currentPhaseId}" (one or both empty)`
+    );
+    return;
+  }
+
+  // --- AC4: try/catch toàn bộ, graceful degradation ---
+  try {
+    // AC1: Tạo approval record
+    await createWorkflowApproval({
+      workflow_phase_id: params.currentPhaseId,
+      approval_type: params.approvalType,
+      decision: params.decision,
+      feedback: params.feedback,
+    });
+
+    if (params.decision === "rejected") {
+      // AC2: Cập nhật phase status → rejected (hoặc revised cho design revise)
+      const status = params.rejectedStatus || "rejected";
+      await updateWorkflowPhaseStatus(params.currentPhaseId, status);
+    } else {
+      // AC3: Đánh dấu phase hoàn thành với output_summary
+      await completeWorkflowPhase(params.currentPhaseId, {
+        output_summary: params.outputSummary || "Approved by PM",
+      });
+    }
+
+    logger.info(
+      `📊 [ApprovalTracking] ${params.approvalType} → ${params.decision} ` +
+      `(phaseId: ${params.currentPhaseId})`
+    );
+  } catch (error) {
+    // AC4: Graceful degradation — chỉ log warning, KHÔNG throw
+    logger.warn("⚠️ [ApprovalTracking] DB error (graceful degradation):", error);
+  }
+}
+
+// ============================================================================
+// Approval Gate Nodes
+// ============================================================================
 
 /**
  * Human Approval Gate - Requirements
@@ -16,6 +105,15 @@ async function requirementsApproval(
 ): Promise<Partial<DevTeamStateType>> {
   logger.info("🔒 Chờ Product Manager duyệt User Stories...");
 
+  // --- US-03 AC3: Ghi event approval_request TRƯỚC interrupt() ---
+  await logApprovalRequest({
+    workflowRunId: state.workflowRunId,
+    workflowPhaseId: state.currentPhaseId,
+    approvalType: "requirements_approval",
+    agentName: "po",
+    contentPreview: state.userStories || "",
+  });
+
   const approval = interrupt({
     type: "requirements_review",
     title: "📋 Duyệt User Stories",
@@ -23,6 +121,27 @@ async function requirementsApproval(
     question:
       "Bạn có đồng ý với User Stories này không? (approve/reject + feedback)",
   }) as { action: "approve" | "reject"; feedback?: string };
+
+  // --- US-03 AC3: Ghi event approved/rejected SAU interrupt() ---
+  await logApprovalDecision({
+    workflowRunId: state.workflowRunId,
+    workflowPhaseId: state.currentPhaseId,
+    approvalType: "requirements_approval",
+    decision: approval.action === "approve" ? "approved" : "rejected",
+    humanFeedback: approval.feedback,
+  });
+
+  // --- US-02: Track approval decision ---
+  await trackApprovalDecision({
+    workflowRunId: state.workflowRunId,
+    currentPhaseId: state.currentPhaseId,
+    approvalType: "requirements_approval",
+    decision: approval.action === "approve" ? "approved" : "rejected",
+    feedback: approval.feedback,
+    outputSummary: approval.action === "approve"
+      ? `User Stories approved. Content length: ${state.userStories?.length || 0} chars`
+      : undefined,
+  });
 
   if (approval.action === "reject") {
     logger.info("❌ User Stories bị từ chối. Chuyển lại PO Agent.");
@@ -55,14 +174,14 @@ async function usRouterNode(
       .split("===STORY_SEPARATOR===")
       .map(s => s.trim())
       .filter(s => s.length > 10);
-      
+
     logger.info(`🔄 US Router: Đã bóc tách được ${stories.length} User Stories.`);
   }
 
   if (currentIndex < stories.length) {
     const nextStory = stories[currentIndex];
     logger.info(`📍 Đang đẩy User Story ${currentIndex + 1}/${stories.length} vào Sprint...`);
-    
+
     return {
       allUserStories: stories,
       currentUsIndex: currentIndex + 1,
@@ -77,10 +196,29 @@ async function usRouterNode(
     };
   } else {
     logger.info(`✅ Toàn bộ ${stories.length} User Stories đã hoàn thành! Release Graph.`);
+
+    // --- US-03: Ghi event workflow_completed TRƯỚC khi cập nhật status ---
+    if (state.workflowRunId) {
+      await logWorkflowCompleted({
+        workflowRunId: state.workflowRunId,
+        totalStories: stories.length,
+      });
+    }
+
+    // --- US-01: Cập nhật trạng thái workflow run → completed ---
+    if (state.workflowRunId) {
+      try {
+        await updateWorkflowRunStatus(state.workflowRunId, "completed");
+        logger.info(`📊 Workflow run ${state.workflowRunId} → completed`);
+      } catch (error) {
+        logger.warn("⚠️ Failed to update workflow run status (graceful degradation):", error);
+      }
+    }
+
     return {
       allUserStories: stories,
       nextAgent: "done",
-      currentPhase: "done"
+      currentPhase: "done",
     };
   }
 }
@@ -94,6 +232,15 @@ async function designApproval(
 ): Promise<Partial<DevTeamStateType>> {
   logger.info("🔒 Chờ Product Manager duyệt thiết kế...");
 
+  // --- US-03 AC3: Ghi event approval_request TRƯỚC interrupt() ---
+  await logApprovalRequest({
+    workflowRunId: state.workflowRunId,
+    workflowPhaseId: state.currentPhaseId,
+    approvalType: "design_approval",
+    agentName: "ba",
+    contentPreview: state.designDocument || "",
+  });
+
   const approval = interrupt({
     type: "design_review",
     title: "📊 Duyệt Design Document",
@@ -101,6 +248,37 @@ async function designApproval(
     question:
       "Chọn: (approve) duyệt / (reject) sửa design / (revise) quay lại sửa requirements",
   }) as { action: "approve" | "reject" | "revise"; feedback?: string };
+
+  // --- US-03 AC3: Ghi event approved/rejected SAU interrupt() ---
+  await logApprovalDecision({
+    workflowRunId: state.workflowRunId,
+    workflowPhaseId: state.currentPhaseId,
+    approvalType: "design_approval",
+    decision: approval.action === "approve" ? "approved" : "rejected",
+    humanFeedback: approval.feedback,
+  });
+
+  // --- US-02: Track approval decision ---
+  if (approval.action === "approve") {
+    await trackApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      currentPhaseId: state.currentPhaseId,
+      approvalType: "design_approval",
+      decision: "approved",
+      feedback: approval.feedback,
+      outputSummary: `Design document approved. Content length: ${state.designDocument?.length || 0} chars`,
+    });
+  } else {
+    // Cả "reject" và "revise" đều ghi decision = "rejected" (BR-06)
+    await trackApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      currentPhaseId: state.currentPhaseId,
+      approvalType: "design_approval",
+      decision: "rejected",
+      feedback: approval.feedback,
+      rejectedStatus: approval.action === "revise" ? "revised" : "rejected",
+    });
+  }
 
   if (approval.action === "revise") {
     logger.info("🔙 Quay lại PO Agent để chỉnh sửa requirements...");
@@ -136,6 +314,15 @@ async function codeReview(
 ): Promise<Partial<DevTeamStateType>> {
   logger.info("🔒 Chờ Product Manager review code...");
 
+  // --- US-03 AC3: Ghi event approval_request TRƯỚC interrupt() ---
+  await logApprovalRequest({
+    workflowRunId: state.workflowRunId,
+    workflowPhaseId: state.currentPhaseId,
+    approvalType: "code_review",
+    agentName: "dev",
+    contentPreview: state.sourceCode || "",
+  });
+
   const approval = interrupt({
     type: "code_review",
     title: "💻 Review Code",
@@ -143,6 +330,27 @@ async function codeReview(
     question:
       "Bạn có approve code này không? (approve/reject + feedback)",
   }) as { action: "approve" | "reject"; feedback?: string };
+
+  // --- US-03 AC3: Ghi event approved/rejected SAU interrupt() ---
+  await logApprovalDecision({
+    workflowRunId: state.workflowRunId,
+    workflowPhaseId: state.currentPhaseId,
+    approvalType: "code_review",
+    decision: approval.action === "approve" ? "approved" : "rejected",
+    humanFeedback: approval.feedback,
+  });
+
+  // --- US-02: Track approval decision ---
+  await trackApprovalDecision({
+    workflowRunId: state.workflowRunId,
+    currentPhaseId: state.currentPhaseId,
+    approvalType: "code_review",
+    decision: approval.action === "approve" ? "approved" : "rejected",
+    feedback: approval.feedback,
+    outputSummary: approval.action === "approve"
+      ? `Code review approved. Source length: ${state.sourceCode?.length || 0} chars`
+      : undefined,
+  });
 
   if (approval.action === "reject") {
     logger.info("❌ Code cần chỉnh sửa. Chuyển lại DEV Agent.");
@@ -169,6 +377,15 @@ async function releaseApproval(
 ): Promise<Partial<DevTeamStateType>> {
   logger.info("🔒 Chờ Product Manager duyệt release...");
 
+  // --- US-03 AC3: Ghi event approval_request TRƯỚC interrupt() ---
+  await logApprovalRequest({
+    workflowRunId: state.workflowRunId,
+    workflowPhaseId: state.currentPhaseId,
+    approvalType: "release_approval",
+    agentName: "tester",
+    contentPreview: state.testResults || "",
+  });
+
   const approval = interrupt({
     type: "release_approval",
     title: "🚀 Duyệt Release",
@@ -176,6 +393,27 @@ async function releaseApproval(
     question:
       "Test đã xong. Bạn có đồng ý release không? (approve/reject + feedback)",
   }) as { action: "approve" | "reject"; feedback?: string };
+
+  // --- US-03 AC3: Ghi event approved/rejected SAU interrupt() ---
+  await logApprovalDecision({
+    workflowRunId: state.workflowRunId,
+    workflowPhaseId: state.currentPhaseId,
+    approvalType: "release_approval",
+    decision: approval.action === "approve" ? "approved" : "rejected",
+    humanFeedback: approval.feedback,
+  });
+
+  // --- US-02: Track approval decision ---
+  await trackApprovalDecision({
+    workflowRunId: state.workflowRunId,
+    currentPhaseId: state.currentPhaseId,
+    approvalType: "release_approval",
+    decision: approval.action === "approve" ? "approved" : "rejected",
+    feedback: approval.feedback,
+    outputSummary: approval.action === "approve"
+      ? `Release approved. Test results length: ${state.testResults?.length || 0} chars`
+      : undefined,
+  });
 
   if (approval.action === "reject") {
     logger.info("❌ Release bị từ chối. Chuyển lại DEV Agent.");
@@ -186,11 +424,51 @@ async function releaseApproval(
     };
   }
 
-  logger.info("✅ Release approved! Trở về luồng US Router để xử lý Story tiếp theo.");
+  logger.info("✅ Release approved! Chuyển sang Context Sync Agent để cập nhật context.");
   return {
+    nextAgent: "context_sync_agent",
+  };
+}
+
+/**
+ * Human Approval Gate - Prompt Sync
+ * Context Sync Agent phát hiện drift trong prompts → dừng để PM duyệt đề xuất thay đổi.
+ * Chỉ kích hoạt khi Context Sync Agent detect drift (Phase 2).
+ */
+async function promptSyncApproval(
+  state: DevTeamStateType
+): Promise<Partial<DevTeamStateType>> {
+  logger.info("🔒 Chờ Product Manager duyệt đề xuất thay đổi prompt...");
+
+  const approval = interrupt({
+    type: "prompt_sync_review",
+    title: "🔄 Duyệt Prompt Sync",
+    content: state.promptChangeProposal,
+    question:
+      "Context Sync Agent phát hiện prompts bị outdated. Bạn có muốn cập nhật không? (approve/reject)",
+  }) as { action: "approve" | "reject"; feedback?: string };
+
+  if (approval.action === "reject") {
+    logger.info("❌ PM từ chối cập nhật prompts. Tiếp tục workflow bình thường.");
+    return {
+      promptChangeProposal: "",
+      nextAgent: "us_router",
+    };
+  }
+
+  logger.info("✅ PM đồng ý cập nhật prompts. Ghi nhận và tiếp tục.");
+  // TODO: Trong tương lai, có thể tự động apply changes vào file prompts ở đây.
+  // Hiện tại chỉ log proposal để PM tự apply hoặc implement auto-apply sau.
+  logger.info(`📝 Prompt change proposal đã được approve:\n${state.promptChangeProposal?.slice(0, 500)}`);
+  return {
+    promptChangeProposal: "",
     nextAgent: "us_router",
   };
 }
+
+// ============================================================================
+// Routing Logic
+// ============================================================================
 
 /**
  * Routing logic - quyết định agent tiếp theo
@@ -207,6 +485,10 @@ function routeAfterApproval(state: DevTeamStateType): string {
       return "dev_agent";
     case "tester_agent":
       return "tester_agent";
+    case "context_sync_agent":
+      return "context_sync_agent";
+    case "prompt_sync_approval":
+      return "prompt_sync_approval";
     case "done":
       return "__end__";
     default:
@@ -214,10 +496,16 @@ function routeAfterApproval(state: DevTeamStateType): string {
   }
 }
 
+// ============================================================================
+// Graph Builder
+// ============================================================================
+
 /**
  * Build the Dev Team supervisor graph
  *
- * Flow: PO → [Approve] → BA → [Approve] → DEV → [Review] → TESTER → [Release] → Done
+ * Flow: PO → [Approve] → US Router → BA → [Approve] → DEV → [Review] → TESTER → [Release]
+ *       → Context Sync → [Prompt Sync Approval if drift] → US Router (next story or __end__)
+ *
  * At each approval gate, the graph pauses with interrupt() for human decision.
  * If rejected, it loops back to the relevant agent with feedback.
  */
@@ -230,12 +518,56 @@ export function buildDevTeamGraph() {
   /**
    * Node đầu tiên: inject project context vào state.
    * Chạy 1 lần duy nhất trước khi PO Agent bắt đầu.
+   *
+   * US-01: Ngoài inject context, còn tạo workflow_runs record trong DB.
+   * US-03 AC1: Ghi event workflow_started sau khi tạo workflow run thành công.
+   * Graceful degradation: nếu DB lỗi → workflowRunId giữ rỗng, workflow tiếp tục bình thường.
    */
   async function injectProjectContext(
     state: DevTeamStateType
   ): Promise<Partial<DevTeamStateType>> {
     logger.info("📋 Injecting project context vào state...");
-    return { projectContext };
+
+    // --- US-01: Khởi tạo workflow run ---
+    let workflowRunId = "";
+    try {
+      const threadId = state.threadId;
+      if (threadId && state.featureRequest) {
+        // Guard: chỉ tạo nếu chưa có workflowRunId (idempotency khi graph retry)
+        if (!state.workflowRunId) {
+          const run = await createWorkflowRun({
+            thread_id: threadId,
+            feature_request: state.featureRequest,
+            created_by: "pm",
+          });
+          if (run) {
+            workflowRunId = run.id;
+            logger.info(`📊 Workflow run created: ${workflowRunId}`);
+
+            // --- US-03 AC1: Ghi event workflow_started ---
+            await logWorkflowStarted({
+              workflowRunId,
+              featureRequest: state.featureRequest,
+              threadId: threadId,
+            });
+          }
+        } else {
+          // Đã có workflowRunId từ lần chạy trước → giữ nguyên
+          workflowRunId = state.workflowRunId;
+          logger.info(`📊 Workflow run already exists: ${workflowRunId}`);
+        }
+      } else {
+        logger.warn("⚠️ threadId hoặc featureRequest rỗng, skip tạo workflow run");
+      }
+    } catch (error) {
+      logger.warn("⚠️ Failed to create workflow run (graceful degradation):", error);
+      // workflowRunId giữ "" — workflow vẫn tiếp tục bình thường
+    }
+
+    return {
+      projectContext,
+      workflowRunId,
+    };
   }
 
   const graph = new StateGraph(DevTeamState)
@@ -248,12 +580,14 @@ export function buildDevTeamGraph() {
     .addNode("ba_agent", baAgentNode)
     .addNode("dev_agent", devAgentNode)
     .addNode("tester_agent", testerAgentNode)
+    .addNode("context_sync_agent", contextSyncAgentNode)
 
     // Human approval gate nodes
     .addNode("requirements_approval", requirementsApproval)
     .addNode("design_approval", designApproval)
     .addNode("code_review", codeReview)
     .addNode("release_approval", releaseApproval)
+    .addNode("prompt_sync_approval", promptSyncApproval)
 
     // Flow: Start → Inject Context → PO
     .addEdge("__start__", "inject_context")
@@ -296,9 +630,20 @@ export function buildDevTeamGraph() {
     // TESTER → Release Approval
     .addEdge("tester_agent", "release_approval")
 
-    // Release Approval → route (US Router or DEV again)
+    // Release Approval → route (Context Sync Agent or DEV again)
     .addConditionalEdges("release_approval", routeAfterApproval, [
       "dev_agent",
+      "context_sync_agent",
+    ])
+
+    // Context Sync Agent → route (Prompt Sync Approval if drift, or US Router)
+    .addConditionalEdges("context_sync_agent", routeAfterApproval, [
+      "prompt_sync_approval",
+      "us_router",
+    ])
+
+    // Prompt Sync Approval → always back to US Router
+    .addConditionalEdges("prompt_sync_approval", routeAfterApproval, [
       "us_router",
     ]);
 

@@ -76,10 +76,12 @@ import type {
   WorkflowPhase,
   WorkflowApproval,
   WorkflowEvent,
-  WorkflowStats,
   CreateWorkflowRunInput,
   CreateWorkflowEventInput,
 } from "./types.js";
+
+// WorkflowStats is defined in workflow-history.repository.ts, not in types.ts
+import type { WorkflowStats } from "./workflow-history.repository.js";
 
 describe("US-01: Workflow History Repository", () => {
   beforeEach(() => {

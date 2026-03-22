@@ -22,6 +22,9 @@ function getDevTeamGraph() {
 /**
  * POST /api/dev-team/start
  * Bắt đầu workflow với feature request mới
+ *
+ * US-01: Truyền threadId vào graph input để inject_context có thể tạo workflow_runs record.
+ *        Response bao gồm workflowRunId (nullable — null nếu DB lỗi, graceful degradation).
  */
 router.post(
   "/start",
@@ -39,9 +42,11 @@ router.post(
       logger.info(`📝 New feature request: "${featureRequest.substring(0, 80)}..."`);
 
       // Start the workflow - it will pause at first interrupt
+      // US-01: truyền threadId vào state để inject_context đọc được
       const result = await graph.invoke(
         {
           featureRequest,
+          threadId,
           messages: [new HumanMessage(featureRequest)],
         },
         config
@@ -54,6 +59,7 @@ router.post(
         success: true,
         data: {
           threadId,
+          workflowRunId: result.workflowRunId || null, // US-01: trả workflowRunId
           currentPhase: result.currentPhase || "requirements",
           status: state.next?.length ? "waiting_approval" : "completed",
           pendingApproval: state.tasks?.[0]?.interrupts?.[0]?.value || null,
@@ -78,6 +84,8 @@ router.post(
 /**
  * POST /api/dev-team/approve
  * Duyệt/từ chối tại một approval gate
+ *
+ * US-01: Response bao gồm workflowRunId.
  */
 router.post(
   "/approve",
@@ -116,6 +124,7 @@ router.post(
         success: true,
         data: {
           threadId,
+          workflowRunId: result.workflowRunId || null, // US-01
           currentPhase: result.currentPhase,
           status:
             result.currentPhase === "done"
@@ -145,6 +154,8 @@ router.post(
 /**
  * GET /api/dev-team/status/:threadId
  * Xem trạng thái hiện tại của workflow
+ *
+ * US-01: Response bao gồm workflowRunId.
  */
 router.get("/status/:threadId", async (req: Request, res: Response) => {
   try {
@@ -169,6 +180,7 @@ router.get("/status/:threadId", async (req: Request, res: Response) => {
       success: true,
       data: {
         threadId,
+        workflowRunId: state.values.workflowRunId || null, // US-01
         currentPhase: state.values.currentPhase,
         status: state.next?.length ? "waiting_approval" : "processing",
         pendingApproval: state.tasks?.[0]?.interrupts?.[0]?.value || null,

@@ -111,6 +111,47 @@ export const DevTeamState = Annotation.Root({
     reducer: (_, next) => next,
     default: () => "",
   }),
+
+  /** Tóm tắt thay đổi từ sprint vừa hoàn thành (do Context Sync Agent tạo) */
+  contextSyncSummary: Annotation<string>({
+    reducer: (_, next) => next,
+    default: () => "",
+  }),
+
+  /** Đề xuất thay đổi prompt từ Context Sync Agent (nếu phát hiện drift) */
+  promptChangeProposal: Annotation<string>({
+    reducer: (_, next) => next,
+    default: () => "",
+  }),
+
+  // ============================================================================
+  // WORKFLOW TRACKING (US-01)
+  // Liên kết graph state ↔ database records xuyên suốt workflow lifecycle
+  // ============================================================================
+
+  /** Thread ID từ LangGraph checkpointer — truyền từ API route.
+   *  Dùng để liên kết workflow run với thread trong createWorkflowRun().
+   */
+  threadId: Annotation<string>({
+    reducer: (_, next) => next,
+    default: () => "",
+  }),
+
+  /** ID của workflow run hiện tại (UUID từ bảng workflow_runs).
+   *  Gán 1 lần khi workflow bắt đầu. Mọi nodes đọc field này để ghi history.
+   */
+  workflowRunId: Annotation<string>({
+    reducer: (_, next) => next,
+    default: () => "",
+  }),
+
+  /** ID của phase hiện tại (UUID từ bảng workflow_phases).
+   *  Cập nhật mỗi khi agent bắt đầu phase mới. Approval gates đọc để liên kết record.
+   */
+  currentPhaseId: Annotation<string>({
+    reducer: (_, next) => next,
+    default: () => "",
+  }),
 });
 
 export type DevTeamStateType = typeof DevTeamState.State;
