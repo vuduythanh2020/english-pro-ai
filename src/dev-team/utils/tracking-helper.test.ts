@@ -191,14 +191,19 @@ describe("US-01: tracking-helper.ts", () => {
         input_summary: "Build a new feature",
       });
 
-      // Verify event created
+      // Verify event created — US-03 AC2: input_data includes agent metadata
       expect(mockCreateEvent).toHaveBeenCalledTimes(1);
       expect(mockCreateEvent).toHaveBeenCalledWith({
         workflow_run_id: "run-uuid-1",
         workflow_phase_id: "phase-uuid-123",
         event_type: "agent_start",
         agent_name: "po",
-        input_data: { summary: "Build a new feature" },
+        input_data: {
+          summary: "Build a new feature",
+          agent_name: "po",
+          workflow_phase_id: "phase-uuid-123",
+          phase_name: "requirements",
+        },
       });
     });
 
@@ -386,14 +391,18 @@ describe("US-01: tracking-helper.ts", () => {
         output_summary: "User stories generated",
       });
 
-      // Verify event created
+      // Verify event created — US-03 AC2: output_data includes agent metadata
       expect(mockCreateEvent).toHaveBeenCalledTimes(1);
       expect(mockCreateEvent).toHaveBeenCalledWith({
         workflow_run_id: "run-1",
         workflow_phase_id: "phase-1",
         event_type: "agent_complete",
         agent_name: "po",
-        output_data: { summary: "User stories generated" },
+        output_data: {
+          summary: "User stories generated",
+          agent_name: "po",
+          workflow_phase_id: "phase-1",
+        },
       });
     });
 

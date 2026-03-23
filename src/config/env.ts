@@ -18,6 +18,15 @@ export const config = {
     port: parseInt(process.env.PORT || "3000", 10),
     env: process.env.NODE_ENV || "development",
   },
+  /**
+   * JWT Configuration — US-04
+   * ⚠️ QUAN TRỌNG: Thay đổi JWT_SECRET trong production!
+   * Default "dev-jwt-secret-change-in-production" chỉ dùng cho development.
+   */
+  jwt: {
+    secret: process.env.JWT_SECRET || "dev-jwt-secret-change-in-production",
+    expiresIn: parseInt(process.env.JWT_EXPIRES_IN || "86400", 10), // 24h = 86400 seconds
+  },
 } as const;
 
 const dbUser = process.env.DB_USER || "postgres";

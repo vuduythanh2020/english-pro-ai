@@ -126,6 +126,35 @@ export async function verifyWorkflowHistorySchema(): Promise<boolean> {
 }
 
 /**
+ * Kiểm tra bảng users đã tồn tại trong database.
+ * Dùng để xác nhận migration 004_users.sql đã chạy thành công.
+ * @returns true nếu bảng users tồn tại
+ */
+export async function verifyUsersSchema(): Promise<boolean> {
+  try {
+    const result = await pool.query<{ table_name: string }>(
+      `SELECT table_name
+       FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_name = 'users'`
+    );
+
+    const exists = result.rows.length > 0;
+
+    if (exists) {
+      logger.info("✅ Users schema verified: table 'users' exists.");
+    } else {
+      logger.warn("⚠️ Users schema not found. Migration 004_users.sql may not have run.");
+    }
+
+    return exists;
+  } catch (error) {
+    logger.warn("⚠️ Failed to verify users schema:", error);
+    return false;
+  }
+}
+
+/**
  * Gracefully close the database pool.
  */
 export async function closeDatabase(): Promise<void> {

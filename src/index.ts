@@ -4,7 +4,8 @@ import { config, validateConfig } from "./config/env.js";
 import { initializeDatabase } from "./config/database.config.js";
 import { chatRoutes } from "./api/chat.routes.js";
 import { devTeamRoutes } from "./api/dev-team.routes.js";
-import { errorHandler, requestLogger } from "./api/middleware.js";
+import { authRoutes } from "./api/auth/auth.routes.js";
+import { authMiddleware, errorHandler, requestLogger } from "./api/middleware.js";
 import { logger } from "./utils/logger.js";
 
 // Validate config
@@ -17,11 +18,11 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(requestLogger);
 
-// Routes
-app.use("/api/chat", chatRoutes);
+// Public routes — KHÔNG yêu cầu auth
+app.use("/api/auth", authRoutes);
 app.use("/api/dev-team", devTeamRoutes);
 
-// Health check
+// Health check — public
 app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
@@ -29,6 +30,9 @@ app.get("/api/health", (_req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Protected routes — yêu cầu JWT auth
+app.use("/api/chat", authMiddleware, chatRoutes);
 
 // Error handler
 app.use(errorHandler);
@@ -55,11 +59,13 @@ async function startServer(): Promise<void> {
   ║  Model:    ${config.openai.model.padEnd(33)}║
   ║──────────────────────────────────────────────║
   ║  API Endpoints:                              ║
-  ║  POST /api/chat          - Chat with tutor   ║
-  ║  POST /api/chat/stream   - Stream chat       ║
+  ║  POST /api/chat          - Chat (auth req)   ║
+  ║  POST /api/chat/stream   - Stream (auth req) ║
   ║  POST /api/dev-team/start   - Start workflow ║
   ║  POST /api/dev-team/approve - Approve/Reject ║
   ║  GET  /api/dev-team/status/:id - Status      ║
+  ║  POST /api/auth/register - Register account  ║
+  ║  POST /api/auth/login    - Login with JWT    ║
   ║  GET  /api/health        - Health check      ║
   ╚══════════════════════════════════════════════╝
     `);

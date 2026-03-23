@@ -13,4 +13,13 @@ export default defineConfig({
       },
     },
   },
+  // SPA fallback: Vite dev server mặc định đã bật appType: 'spa',
+  // tự động trả index.html cho mọi route không match static file.
+  // Khi deploy production (nginx, Vercel, etc.), cần cấu hình server
+  // redirect mọi route về index.html.
+  build: {
+    rollupOptions: {
+      input: './index.html',
+    },
+  },
 })

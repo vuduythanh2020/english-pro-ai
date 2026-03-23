@@ -391,10 +391,10 @@ async function releaseApproval(
     title: "🚀 Duyệt Release",
     content: state.testResults,
     question:
-      "Test đã xong. Bạn có đồng ý release không? (approve/reject + feedback)",
-  }) as { action: "approve" | "reject"; feedback?: string };
+      "Chọn: (approve) duyệt release / (reject) code có bug, trả Dev sửa / (retest) test chưa đạt, yêu cầu Tester sửa lại",
+  }) as { action: "approve" | "reject" | "retest"; feedback?: string };
 
-  // --- US-03 AC3: Ghi event approved/rejected SAU interrupt() ---
+  // --- US-03 AC3: Ghi event approved/rejected/retested SAU interrupt() ---
   await logApprovalDecision({
     workflowRunId: state.workflowRunId,
     workflowPhaseId: state.currentPhaseId,
@@ -404,19 +404,38 @@ async function releaseApproval(
   });
 
   // --- US-02: Track approval decision ---
-  await trackApprovalDecision({
-    workflowRunId: state.workflowRunId,
-    currentPhaseId: state.currentPhaseId,
-    approvalType: "release_approval",
-    decision: approval.action === "approve" ? "approved" : "rejected",
-    feedback: approval.feedback,
-    outputSummary: approval.action === "approve"
-      ? `Release approved. Test results length: ${state.testResults?.length || 0} chars`
-      : undefined,
-  });
+  if (approval.action === "approve") {
+    await trackApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      currentPhaseId: state.currentPhaseId,
+      approvalType: "release_approval",
+      decision: "approved",
+      feedback: approval.feedback,
+      outputSummary: `Release approved. Test results length: ${state.testResults?.length || 0} chars`,
+    });
+  } else {
+    // Cả "reject" và "retest" đều ghi decision = "rejected"
+    await trackApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      currentPhaseId: state.currentPhaseId,
+      approvalType: "release_approval",
+      decision: "rejected",
+      feedback: approval.feedback,
+      rejectedStatus: approval.action === "retest" ? "revised" : "rejected",
+    });
+  }
+
+  if (approval.action === "retest") {
+    logger.info("🔄 Test chưa đạt. Yêu cầu TESTER Agent sửa lại...");
+    return {
+      humanFeedback: approval.feedback || "Test cần sửa lại.",
+      nextAgent: "tester_agent",
+      currentPhase: "testing",
+    };
+  }
 
   if (approval.action === "reject") {
-    logger.info("❌ Release bị từ chối. Chuyển lại DEV Agent.");
+    logger.info("❌ Code có bug. Chuyển lại DEV Agent kèm báo cáo lỗi.");
     return {
       humanFeedback: approval.feedback || "Cần fix bugs trước khi release.",
       nextAgent: "dev_agent",
@@ -530,9 +549,18 @@ export function buildDevTeamGraph() {
 
     // --- US-01: Khởi tạo workflow run ---
     let workflowRunId = "";
+    let threadId = state.threadId;
     try {
-      const threadId = state.threadId;
-      if (threadId && state.featureRequest) {
+      // FIX: Auto-generate threadId nếu caller quên truyền (e.g. test-cli cũ)
+      if (!threadId) {
+        threadId = `auto-thread-${Date.now()}`;
+        logger.warn(
+          `⚠️ [injectProjectContext] threadId rỗng trong state. ` +
+          `Auto-generated: ${threadId}. Hãy truyền threadId khi invoke graph.`
+        );
+      }
+
+      if (state.featureRequest) {
         // Guard: chỉ tạo nếu chưa có workflowRunId (idempotency khi graph retry)
         if (!state.workflowRunId) {
           const run = await createWorkflowRun({
@@ -557,7 +585,7 @@ export function buildDevTeamGraph() {
           logger.info(`📊 Workflow run already exists: ${workflowRunId}`);
         }
       } else {
-        logger.warn("⚠️ threadId hoặc featureRequest rỗng, skip tạo workflow run");
+        logger.warn("⚠️ featureRequest rỗng, skip tạo workflow run");
       }
     } catch (error) {
       logger.warn("⚠️ Failed to create workflow run (graceful degradation):", error);
@@ -567,6 +595,7 @@ export function buildDevTeamGraph() {
     return {
       projectContext,
       workflowRunId,
+      threadId, // FIX: Trả threadId (auto-generated nếu cần) về state
     };
   }
 
@@ -630,9 +659,10 @@ export function buildDevTeamGraph() {
     // TESTER → Release Approval
     .addEdge("tester_agent", "release_approval")
 
-    // Release Approval → route (Context Sync Agent or DEV again)
+    // Release Approval → route (Context Sync Agent, DEV again, or TESTER again)
     .addConditionalEdges("release_approval", routeAfterApproval, [
       "dev_agent",
+      "tester_agent",
       "context_sync_agent",
     ])
 

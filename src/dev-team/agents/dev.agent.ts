@@ -6,12 +6,19 @@ import {
 } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { config } from "../../config/env.js";
-import { DEV_PROMPT } from "../prompts/dev-team.prompts.js";
+import { DEV_BASE_PROMPT } from "../prompts/dev-team.prompts.js";
 import type { DevTeamStateType } from "../state.js";
 import { allDevTools } from "../tools/codebase-tools.js";
 import { executeToolCall, buildToolErrorMessage } from "../utils/execute-tool.js";
 import { logger } from "../../utils/logger.js";
 import { startPhaseTracking, completePhaseTracking } from "../utils/tracking-helper.js";
+import { SkillRegistry } from "../skills/index.js";
+import { exploreCodebaseSkill } from "../skills/explore-codebase.skill.js";
+import { writeTypescriptSkill } from "../skills/write-typescript.skill.js";
+import { errorFixLoopSkill } from "../skills/error-fix-loop.skill.js";
+import { verifySubmitSkill } from "../skills/verify-submit.skill.js";
+import { revisionFeedbackSkill } from "../skills/revision-feedback.skill.js";
+import type { SkillSelectionContext } from "../skills/types.js";
 
 // Khởi tạo model Claude cho DEV
 const llm = new ChatAnthropic({
@@ -59,6 +66,18 @@ const llm = new ChatAnthropic({
  * allDevTools đã bao gồm: readProjectFile, listDirectory, readFileFull, writeFile, executeCommand, getProjectStructure, submitFeature.
  */
 const devToolkit = allDevTools;
+
+// ============================================================================
+// Khởi tạo SkillRegistry cho Dev Agent
+// ============================================================================
+const devSkillRegistry = new SkillRegistry();
+devSkillRegistry.registerAll([
+  exploreCodebaseSkill,
+  writeTypescriptSkill,
+  errorFixLoopSkill,
+  verifySubmitSkill,
+  revisionFeedbackSkill,
+]);
 
 /**
  * Ước tính token count từ text.
@@ -161,10 +180,10 @@ export async function devAgentNode(
       : state.designDocument,
   });
 
-  // System prompt + project context
-  const systemPrompt = projectContext
-    ? `${DEV_PROMPT}\n\n## BỐI CẢNH DỰ ÁN HIỆN TẠI\n${projectContext}`
-    : DEV_PROMPT;
+  // Base prompt + project context (skills sẽ được inject động trong loop)
+  const basePromptWithContext = projectContext
+    ? `${DEV_BASE_PROMPT}\n\n## BỐI CẢNH DỰ ÁN HIỆN TẠI\n${projectContext}`
+    : DEV_BASE_PROMPT;
 
   // Truncate large state fields to avoid bloating the prompt
   // Tăng limit cho design doc vì BA giờ trả output dài hơn (maxTokens=16384)
@@ -220,26 +239,68 @@ ${truncatedSource}
 Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối không in code bằng markdown văn xuôi. Sau khi sửa, gọi \`execute_command\` để biên dịch kiểm tra.`;
   }
 
-  // Diagnostic logging — giúp debug 502/prompt size issues
-  logPromptDiagnostics("DEV", systemPrompt, userMessage, devToolkit.length);
-
   // Bind tools vào LLM để kích hoạt Native Tool Calling.
   // XML parsing bên dưới vẫn giữ như safety net phòng trường hợp LLM fallback sang text.
   const llmWithTools = llm.bindTools(devToolkit);
-
-  const messages: BaseMessage[] = [
-    new SystemMessage(systemPrompt),
-    new HumanMessage(userMessage),
-  ];
 
   const MAX_TOOL_ROUNDS = 15; // Tăng lên 15 vòng để có room cho error-fix cycles
   const MAX_TOOLS_PER_ROUND = 5;
   let executionLogs = "";
   let hasCalledWriteFile = false;
   const writtenFiles = new Set<string>(); // Track file đã write để phân biệt lỗi "do mình" vs "pre-existing"
+  let lastRoundHadError = false; // Track error state cho SkillRegistry
+
+  // Build initial system prompt with skills (round 0 context)
+  const initialSkillContext: SkillSelectionContext = {
+    agentRole: "dev",
+    currentRound: 0,
+    maxRounds: MAX_TOOL_ROUNDS,
+    hasError: false,
+    hasFeedback: !!(humanFeedback),
+    hasWrittenFiles: false,
+    writtenFiles: [],
+  };
+  const initialBuild = devSkillRegistry.buildPrompt({
+    basePrompt: basePromptWithContext,
+    context: initialSkillContext,
+  });
+
+  // Diagnostic logging — giúp debug 502/prompt size issues
+  logPromptDiagnostics("DEV", initialBuild.prompt, userMessage, devToolkit.length);
+  logger.info(`📚 [DEV] Initial active skills: [${initialBuild.activeSkillNames.join(", ")}]`);
+
+  const messages: BaseMessage[] = [
+    new SystemMessage(initialBuild.prompt),
+    new HumanMessage(userMessage),
+  ];
 
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      // --- Dynamic Skill Selection: rebuild system prompt mỗi round ---
+      const skillContext: SkillSelectionContext = {
+        agentRole: "dev",
+        currentRound: round,
+        maxRounds: MAX_TOOL_ROUNDS,
+        hasError: lastRoundHadError,
+        hasFeedback: !!(humanFeedback),
+        hasWrittenFiles: hasCalledWriteFile,
+        writtenFiles: [...writtenFiles],
+      };
+      const skillBuild = devSkillRegistry.buildPrompt({
+        basePrompt: basePromptWithContext,
+        context: skillContext,
+      });
+
+      // Cập nhật system message (luôn ở index 0)
+      messages[0] = new SystemMessage(skillBuild.prompt);
+
+      if (round > 0) {
+        logger.debug(`📚 [DEV] Round ${round + 1} skills: [${skillBuild.activeSkillNames.join(", ")}] (~${skillBuild.estimatedTokens} tokens)`);
+      }
+
+      // Reset error flag cho round mới
+      lastRoundHadError = false;
+
       // Log tổng messages size trước mỗi vòng
       const totalMsgChars = messages.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0);
       logger.debug(`📨 [DEV] Vòng ${round + 1}: ${messages.length} messages, ~${totalMsgChars} chars (~${estimateTokens(totalMsgChars.toString())} tokens)`);
@@ -403,6 +464,11 @@ Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối kh
       const hasCommandFail = lastMessages.some(
         (m) => m instanceof ToolMessage && typeof m.content === "string" && m.content.startsWith("❌ Lệnh thất bại")
       );
+
+      // Cập nhật error flag cho SkillRegistry — round tiếp theo sẽ inject error-fix-loop skill
+      if (hasCommandFail) {
+        lastRoundHadError = true;
+      }
 
       if (hasCommandFail && !isFinished) {
         const writtenFilesList = writtenFiles.size > 0
