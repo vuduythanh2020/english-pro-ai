@@ -1,5 +1,5 @@
 /**
- * Unit Tests cho user.repository.ts — US-02
+ * Unit Tests cho user.repository.ts — US-03 + US-02 + US-01 (Google OAuth + User Roles)
  * =============================================
  * Mock PostgreSQL pool.query() để test logic repository mà không cần DB thật.
  * Theo pattern của workflow-history.repository.test.ts.
@@ -13,7 +13,7 @@
  * - TC-06: findUserByEmail() — happy path, trả UserRow CÓ password_hash (AC1)
  * - TC-07: findUserByEmail() — không tìm thấy → return null (AC1)
  * - TC-08: findUserByEmail() — DB error → return null (graceful)
- * - TC-09: findUserById() — happy path, trả UserRecord KHÔNG có password_hash (AC1, BR-01)
+ * - TC-09: findUserById() — happy path, trả UserRecord KHÔNG có password_hash (BR-01), CÓ role
  * - TC-10: findUserById() — không tìm thấy → return null (AC1)
  * - TC-11: findUserById() — DB error → return null (graceful)
  * - TC-12: SQL queries — RETURNING không chứa password_hash cho createUser và findUserById (BR-01)
@@ -45,11 +45,13 @@ import { createUser, findUserByEmail, findUserById } from "./user.repository.js"
 import type { UserRecord, UserRow } from "./types.js";
 
 // =============================================
-// Fixtures
+// Fixtures — bao gồm trường role (migration 005) + auth_provider, google_id (migration 006)
 // =============================================
 const mockUserRecord: UserRecord = {
   id: "550e8400-e29b-41d4-a716-446655440000",
   email: "test@example.com",
+  role: "user",
+  auth_provider: "local",
   name: "Test User",
   profession: "Developer",
   english_level: "intermediate",
@@ -61,6 +63,7 @@ const mockUserRecord: UserRecord = {
 const mockUserRow: UserRow = {
   ...mockUserRecord,
   password_hash: "abcdef1234567890abcdef1234567890:0123456789abcdef",
+  google_id: null,
 };
 
 describe("user.repository", () => {
@@ -72,7 +75,7 @@ describe("user.repository", () => {
   // createUser()
   // =============================================
   describe("createUser()", () => {
-    it("TC-01: happy path — trả UserRecord không có password_hash (BR-01)", async () => {
+    it("TC-01: happy path — trả UserRecord không có password_hash (BR-01), CÓ role", async () => {
       mockQuery.mockResolvedValueOnce({ rows: [mockUserRecord] });
 
       const result = await createUser({
@@ -85,6 +88,8 @@ describe("user.repository", () => {
       });
 
       expect(result).toEqual(mockUserRecord);
+      expect(result!.role).toBe("user");
+      expect(result!.auth_provider).toBe("local");
       // Verify SQL được gọi
       expect(mockQuery).toHaveBeenCalledTimes(1);
       const [sql, params] = mockQuery.mock.calls[0];
@@ -92,8 +97,10 @@ describe("user.repository", () => {
       expect(sql).toContain("RETURNING");
       expect(sql).toContain("email");
       expect(sql).toContain("name");
-      // Kiểm tra RETURNING clause không liệt kê password_hash
+      // RETURNING bao gồm role và auth_provider
       const returningClause = sql.substring(sql.indexOf("RETURNING"));
+      expect(returningClause).toContain("role");
+      expect(returningClause).toContain("auth_provider");
       expect(returningClause).not.toContain("password_hash");
       // Params đúng thứ tự
       expect(params[0]).toBe("test@example.com");
@@ -202,10 +209,15 @@ describe("user.repository", () => {
       expect(result).toEqual(mockUserRow);
       expect(result!.password_hash).toBeDefined();
       expect(result!.email).toBe("test@example.com");
+      expect(result!.role).toBe("user");
+      expect(result!.auth_provider).toBe("local");
 
-      // Verify SQL SELECT bao gồm password_hash
+      // Verify SQL SELECT bao gồm password_hash, role, auth_provider, google_id
       const sql = mockQuery.mock.calls[0][0];
       expect(sql).toContain("password_hash");
+      expect(sql).toContain("role");
+      expect(sql).toContain("auth_provider");
+      expect(sql).toContain("google_id");
       expect(sql).toContain("WHERE email = $1");
 
       // Verify params
@@ -232,18 +244,22 @@ describe("user.repository", () => {
   // findUserById()
   // =============================================
   describe("findUserById()", () => {
-    it("TC-09: happy path — trả UserRecord KHÔNG có password_hash (BR-01)", async () => {
+    it("TC-09: happy path — trả UserRecord KHÔNG có password_hash (BR-01), CÓ role", async () => {
       mockQuery.mockResolvedValueOnce({ rows: [mockUserRecord] });
 
       const result = await findUserById("550e8400-e29b-41d4-a716-446655440000");
 
       expect(result).toEqual(mockUserRecord);
+      expect(result!.role).toBe("user");
+      expect(result!.auth_provider).toBe("local");
       // Kết quả KHÔNG chứa password_hash
       expect("password_hash" in result!).toBe(false);
 
-      // Verify SQL SELECT không chứa password_hash
+      // Verify SQL SELECT không chứa password_hash nhưng CÓ role và auth_provider
       const sql = mockQuery.mock.calls[0][0];
       expect(sql).not.toContain("password_hash");
+      expect(sql).toContain("role");
+      expect(sql).toContain("auth_provider");
       expect(sql).toContain("WHERE id = $1");
     });
 
@@ -266,7 +282,7 @@ describe("user.repository", () => {
   // TC-12: SQL security — RETURNING và SELECT không lộ password_hash
   // =============================================
   describe("SQL security (BR-01)", () => {
-    it("TC-12a: createUser RETURNING không chứa password_hash", async () => {
+    it("TC-12a: createUser RETURNING không chứa password_hash, CÓ role và auth_provider", async () => {
       mockQuery.mockResolvedValueOnce({ rows: [mockUserRecord] });
 
       await createUser({
@@ -278,28 +294,35 @@ describe("user.repository", () => {
       const sql: string = mockQuery.mock.calls[0][0];
       const returningPart = sql.substring(sql.indexOf("RETURNING"));
       expect(returningPart).not.toContain("password_hash");
+      expect(returningPart).toContain("role");
+      expect(returningPart).toContain("auth_provider");
     });
 
-    it("TC-12b: findUserById SELECT không chứa password_hash", async () => {
+    it("TC-12b: findUserById SELECT không chứa password_hash, CÓ role và auth_provider", async () => {
       mockQuery.mockResolvedValueOnce({ rows: [mockUserRecord] });
 
       await findUserById("test-id");
 
       const sql: string = mockQuery.mock.calls[0][0];
       expect(sql).not.toContain("password_hash");
+      expect(sql).toContain("role");
+      expect(sql).toContain("auth_provider");
       // Nhưng vẫn có các cột cần thiết
       expect(sql).toContain("id");
       expect(sql).toContain("email");
       expect(sql).toContain("name");
     });
 
-    it("TC-12c: findUserByEmail SELECT CÓ password_hash (cần cho xác thực)", async () => {
+    it("TC-12c: findUserByEmail SELECT CÓ password_hash, role, auth_provider, google_id (cần cho xác thực)", async () => {
       mockQuery.mockResolvedValueOnce({ rows: [mockUserRow] });
 
       await findUserByEmail("test@example.com");
 
       const sql: string = mockQuery.mock.calls[0][0];
       expect(sql).toContain("password_hash");
+      expect(sql).toContain("role");
+      expect(sql).toContain("auth_provider");
+      expect(sql).toContain("google_id");
     });
   });
 

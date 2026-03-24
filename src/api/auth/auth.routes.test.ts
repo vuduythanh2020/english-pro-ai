@@ -1,5 +1,5 @@
 /**
- * Unit Tests cho auth.routes.ts — US-03, US-04 & US-01
+ * Unit Tests cho auth.routes.ts — US-03, US-04, US-01 & US-02 (Role in JWT)
  * =============================================
  * Test endpoints:
  * - POST /api/auth/register (US-03)
@@ -31,6 +31,12 @@
  *
  * === GET /me Tests (US-01) ===
  * - TC-M01 → TC-M12
+ *
+ * US-02 Updates:
+ * - mockUserRecord & mockUserRow fixtures thêm `role`
+ * - Login TC-L01 expects generateToken called with role
+ * - Register response giờ có token
+ * - Mock authMiddleware gắn req.user.role
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -71,6 +77,8 @@ vi.mock("./jwt.utils.js", () => ({
  * - Có Authorization header "Bearer <token>" và verifyToken trả payload → gắn req.user, gọi next()
  * - Không có header hoặc sai format → 401 "Authentication required"
  * - Token invalid (verifyToken trả null) → 401 "Invalid or expired token"
+ *
+ * US-02: req.user giờ có thêm `role` từ payload
  */
 vi.mock("../middleware.js", () => ({
   authMiddleware: (req: Request, res: Response, next: NextFunction) => {
@@ -107,6 +115,7 @@ vi.mock("../middleware.js", () => ({
     req.user = {
       userId: payload.userId,
       email: payload.email,
+      role: payload.role,
     };
 
     next();
@@ -264,12 +273,13 @@ async function getMe(
 }
 
 // =============================================
-// Fixtures
+// Fixtures — US-02: thêm role
 // =============================================
 
 const mockUserRecord = {
   id: "550e8400-e29b-41d4-a716-446655440000",
   email: "test@example.com",
+  role: "user",
   name: "Test User",
   profession: "Software Engineer",
   english_level: "intermediate",
@@ -312,6 +322,7 @@ describe("POST /api/auth/register", () => {
     mockFindUserByEmail.mockResolvedValue(null);
     mockHashPassword.mockResolvedValue("randomsalt:derivedhash");
     mockCreateUser.mockResolvedValue(mockUserRecord);
+    mockGenerateToken.mockReturnValue("mock.register.jwt.token");
   });
 
   // =============================================
@@ -323,13 +334,15 @@ describe("POST /api/auth/register", () => {
       const res = await postRegister(app, validRegisterBody);
 
       expect(res.status).toBe(201);
-      const resBody = res.body as { success: boolean; data: { user: Record<string, unknown> } };
+      const resBody = res.body as { success: boolean; data: { token: string; user: Record<string, unknown> } };
       expect(resBody.success).toBe(true);
       expect(resBody.data.user).toBeDefined();
+      expect(resBody.data.token).toBeDefined();
 
       const user = resBody.data.user;
       expect(user.id).toBe(mockUserRecord.id);
       expect(user.email).toBe(mockUserRecord.email);
+      expect(user.role).toBe(mockUserRecord.role);
       expect(user.name).toBe(mockUserRecord.name);
       expect(user.profession).toBe(mockUserRecord.profession);
       expect(user.englishLevel).toBe(mockUserRecord.english_level);
@@ -353,7 +366,7 @@ describe("POST /api/auth/register", () => {
       });
 
       expect(res.status).toBe(201);
-      const resBody = res.body as { success: boolean; data: { user: Record<string, unknown> } };
+      const resBody = res.body as { success: boolean; data: { token: string; user: Record<string, unknown> } };
       expect(resBody.success).toBe(true);
       expect(resBody.data.user.profession).toBeNull();
       expect(resBody.data.user.goals).toBeNull();
@@ -472,14 +485,14 @@ describe("POST /api/auth/register", () => {
       const res = await postRegister(app, validRegisterBody);
 
       expect(res.status).toBe(201);
-      const resBody = res.body as { success: boolean; data: { user: Record<string, unknown> } };
+      const resBody = res.body as { success: boolean; data: { token: string; user: Record<string, unknown> } };
       const user = resBody.data.user;
 
       expect(user).not.toHaveProperty("password_hash");
       expect(user).not.toHaveProperty("passwordHash");
     });
 
-    it("TC-11: Response format đúng { success, data: { user: {...} } }", async () => {
+    it("TC-11: Response format đúng { success, data: { token, user: {...} } }", async () => {
       const res = await postRegister(app, validRegisterBody);
 
       expect(res.status).toBe(201);
@@ -488,12 +501,14 @@ describe("POST /api/auth/register", () => {
       expect(resBody).toHaveProperty("success", true);
       expect(resBody).toHaveProperty("data");
 
-      const data = resBody.data as { user: Record<string, unknown> };
+      const data = resBody.data as { token: string; user: Record<string, unknown> };
+      expect(data).toHaveProperty("token");
       expect(data).toHaveProperty("user");
 
       const user = data.user;
       expect(user).toHaveProperty("id");
       expect(user).toHaveProperty("email");
+      expect(user).toHaveProperty("role");
       expect(user).toHaveProperty("name");
       expect(user).toHaveProperty("profession");
       expect(user).toHaveProperty("englishLevel");
@@ -505,7 +520,7 @@ describe("POST /api/auth/register", () => {
       const res = await postRegister(app, validRegisterBody);
 
       expect(res.status).toBe(201);
-      const resBody = res.body as { success: boolean; data: { user: Record<string, unknown> } };
+      const resBody = res.body as { success: boolean; data: { token: string; user: Record<string, unknown> } };
       const user = resBody.data.user;
 
       expect(user).not.toHaveProperty("updated_at");
@@ -695,6 +710,7 @@ describe("POST /api/auth/register", () => {
           ...mockUserRecord,
           english_level: level,
         });
+        mockGenerateToken.mockReturnValue("mock.register.jwt.token");
 
         const res = await postRegister(app, {
           ...validRegisterBody,
@@ -729,6 +745,25 @@ describe("POST /api/auth/register", () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it("US-02: Register response giờ có token", async () => {
+      const res = await postRegister(app, validRegisterBody);
+
+      expect(res.status).toBe(201);
+      const resBody = res.body as { success: boolean; data: { token: string; user: Record<string, unknown> } };
+      expect(resBody.data.token).toBe("mock.register.jwt.token");
+    });
+
+    it("US-02: generateToken được gọi với role 'user' khi register", async () => {
+      await postRegister(app, validRegisterBody);
+
+      expect(mockGenerateToken).toHaveBeenCalledTimes(1);
+      expect(mockGenerateToken).toHaveBeenCalledWith({
+        userId: mockUserRecord.id,
+        email: mockUserRecord.email,
+        role: "user",
+      });
     });
   });
 });
@@ -768,12 +803,13 @@ describe("POST /api/auth/login", () => {
       expect(resBody.data.user.id).toBe(mockUserRecord.id);
       expect(resBody.data.user.email).toBe(mockUserRecord.email);
 
-      // Verify mock calls
+      // Verify mock calls — US-02: generateToken giờ nhận thêm role
       expect(mockFindUserByEmail).toHaveBeenCalledWith("test@example.com");
       expect(mockVerifyPassword).toHaveBeenCalledWith("securePass123", "randomsalt:derivedhash");
       expect(mockGenerateToken).toHaveBeenCalledWith({
         userId: mockUserRecord.id,
         email: mockUserRecord.email,
+        role: mockUserRecord.role,
       });
     });
 
@@ -794,7 +830,7 @@ describe("POST /api/auth/login", () => {
       expect(typeof data.user).toBe("object");
     });
 
-    it("TC-L10: User object có đúng fields: id, email, name, profession, englishLevel, goals (AC4)", async () => {
+    it("TC-L10: User object có đúng fields: id, email, role, name, profession, englishLevel, goals (AC4)", async () => {
       const res = await postLogin(app, validLoginBody);
 
       expect(res.status).toBe(200);
@@ -806,6 +842,7 @@ describe("POST /api/auth/login", () => {
 
       expect(user).toHaveProperty("id");
       expect(user).toHaveProperty("email");
+      expect(user).toHaveProperty("role");
       expect(user).toHaveProperty("name");
       expect(user).toHaveProperty("profession");
       expect(user).toHaveProperty("englishLevel");
@@ -1124,13 +1161,14 @@ describe("POST /api/auth/login", () => {
       expect(mockVerifyPassword).toHaveBeenCalledWith(longPassword, mockUserRow.password_hash);
     });
 
-    it("generateToken được gọi với đúng payload { userId, email }", async () => {
+    it("US-02: generateToken được gọi với đúng payload { userId, email, role }", async () => {
       await postLogin(app, validLoginBody);
 
       expect(mockGenerateToken).toHaveBeenCalledTimes(1);
       expect(mockGenerateToken).toHaveBeenCalledWith({
         userId: mockUserRow.id,
         email: mockUserRow.email,
+        role: mockUserRow.role,
       });
     });
 
@@ -1146,6 +1184,7 @@ describe("POST /api/auth/login", () => {
 
       expect(user.id).toBe(mockUserRow.id);
       expect(user.email).toBe(mockUserRow.email);
+      expect(user.role).toBe(mockUserRow.role);
       expect(user.name).toBe(mockUserRow.name);
       expect(user.profession).toBe(mockUserRow.profession);
       expect(user.englishLevel).toBe(mockUserRow.english_level);
@@ -1197,6 +1236,7 @@ describe("GET /api/auth/me", () => {
   const mockPayload = {
     userId: mockUserRecord.id,
     email: mockUserRecord.email,
+    role: mockUserRecord.role,
   };
 
   beforeEach(() => {
@@ -1232,7 +1272,7 @@ describe("GET /api/auth/me", () => {
       expect(resBody.data.user).toBeDefined();
     });
 
-    it("TC-M02: Response chứa đúng fields: id, email, name, profession, englishLevel, goals, createdAt", async () => {
+    it("TC-M02: Response chứa đúng fields: id, email, role, name, profession, englishLevel, goals, createdAt", async () => {
       const res = await getMe(app, validToken);
 
       expect(res.status).toBe(200);
@@ -1244,6 +1284,7 @@ describe("GET /api/auth/me", () => {
 
       expect(user).toHaveProperty("id", mockUserRecord.id);
       expect(user).toHaveProperty("email", mockUserRecord.email);
+      expect(user).toHaveProperty("role", mockUserRecord.role);
       expect(user).toHaveProperty("name", mockUserRecord.name);
       expect(user).toHaveProperty("profession", mockUserRecord.profession);
       expect(user).toHaveProperty("englishLevel", mockUserRecord.english_level);

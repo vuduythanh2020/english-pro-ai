@@ -18,6 +18,9 @@ export const config = {
     port: parseInt(process.env.PORT || "3000", 10),
     env: process.env.NODE_ENV || "development",
   },
+  workflow: {
+    autoApprove: process.env.AUTO_APPROVE_ENABLED === "true",
+  },
   /**
    * JWT Configuration — US-04
    * ⚠️ QUAN TRỌNG: Thay đổi JWT_SECRET trong production!
@@ -26,6 +29,18 @@ export const config = {
   jwt: {
     secret: process.env.JWT_SECRET || "dev-jwt-secret-change-in-production",
     expiresIn: parseInt(process.env.JWT_EXPIRES_IN || "86400", 10), // 24h = 86400 seconds
+  },
+  /**
+   * Google OAuth Configuration — US-02
+   * ⚠️ QUAN TRỌNG: Lấy credentials từ Google Cloud Console:
+   * https://console.cloud.google.com/apis/credentials
+   * Chỉ hoạt động khi đã cấu hình đủ clientId và clientSecret.
+   * Default redirectUri phù hợp cho local development.
+   */
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID || "",
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+    redirectUri: process.env.GOOGLE_REDIRECT_URI || "http://localhost:3000/auth/google/callback",
   },
 } as const;
 

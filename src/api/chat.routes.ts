@@ -30,6 +30,7 @@ router.post("/", requireFields("message"), async (req: Request, res: Response) =
 
     const config = {
       configurable: { thread_id: currentThreadId },
+      recursionLimit: 150
     };
 
     const input = {
@@ -82,6 +83,7 @@ router.post("/stream", requireFields("message"), async (req: Request, res: Respo
 
     const config = {
       configurable: { thread_id: currentThreadId },
+      recursionLimit: 150
     };
 
     const input = {

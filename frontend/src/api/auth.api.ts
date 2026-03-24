@@ -5,9 +5,10 @@
  * - POST /api/auth/register → registerApi()
  * - POST /api/auth/login    → loginApi()
  * - GET  /api/auth/me       → getMeApi()
+ * - POST /api/auth/google   → googleAuthApi()  ← US-01 Google OAuth
  *
  * Types mapping chính xác với backend toUserResponse() trong auth.routes.ts:
- * { id, email, name, profession, englishLevel, goals, createdAt }
+ * { id, email, name, role, profession, englishLevel, goals, createdAt }
  */
 
 import { apiClient } from "./client.ts";
@@ -17,11 +18,13 @@ import { apiClient } from "./client.ts";
 /**
  * Khớp với toUserResponse() trong auth.routes.ts.
  * createdAt là string vì JSON.parse serialize Date thành ISO string.
+ * role: "user" | "admin" — từ migration 005_user_roles.sql.
  */
 interface UserProfile {
   id: string;
   email: string;
   name: string;
+  role: string;
   profession: string | null;
   englishLevel: string | null;
   goals: string[] | null;
@@ -59,6 +62,11 @@ interface GetMeResponse {
   user: UserProfile;
 }
 
+/** POST /api/auth/google → request body shape (US-01 AC1) */
+interface GoogleAuthRequest {
+  code: string;
+}
+
 // === API Functions ===
 
 function registerApi(data: RegisterRequest): Promise<RegisterResponse> {
@@ -73,5 +81,10 @@ function getMeApi(): Promise<GetMeResponse> {
   return apiClient.get<GetMeResponse>("/api/auth/me");
 }
 
-export { registerApi, loginApi, getMeApi };
-export type { UserProfile, RegisterRequest, LoginRequest, LoginResponse, GetMeResponse };
+/** Google OAuth: đổi authorization code lấy token + user (US-01 AC2) */
+function googleAuthApi(data: GoogleAuthRequest): Promise<LoginResponse> {
+  return apiClient.post<LoginResponse>("/api/auth/google", data);
+}
+
+export { registerApi, loginApi, getMeApi, googleAuthApi };
+export type { UserProfile, RegisterRequest, LoginRequest, LoginResponse, GetMeResponse, GoogleAuthRequest };

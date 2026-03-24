@@ -210,6 +210,17 @@ export async function contextSyncAgentNode(
         );
     }
 
+    // ── Capture story summary (tích lũy qua append reducer) ──────────
+    const storySummary = [
+        `## Story ${sprintIndex}/${totalStories}`,
+        `**Yêu cầu**: ${state.userStories?.slice(0, 300) || "(không có)"}`,
+        `**Thiết kế**: ${state.designDocument?.slice(0, 300) || "(không có)"}`,
+        `**Code**: ${state.sourceCode?.slice(0, 500) || "(không có)"}`,
+        `**Test**: ${state.testResults?.slice(0, 300) || "(không có)"}`,
+    ].join("\n");
+
+    logger.info(`📝 [ContextSync] Captured story summary ${sprintIndex}/${totalStories} (${storySummary.length} chars)`);
+
     // ── Quyết định routing ──────────────────────────────────────────
     const hasProposal = promptChangeProposal.length > 0;
 
@@ -217,6 +228,7 @@ export async function contextSyncAgentNode(
         projectContext: newContext,
         contextSyncSummary: changeSummary,
         promptChangeProposal,
+        completedStorySummaries: [storySummary],  // Append nhờ reducer
         nextAgent: hasProposal ? "prompt_sync_approval" : "us_router",
     };
 }

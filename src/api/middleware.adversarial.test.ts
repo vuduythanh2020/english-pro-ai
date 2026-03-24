@@ -1,5 +1,5 @@
 /**
- * Adversarial / Edge-case Tests cho authMiddleware — US-01 (Tester Agent)
+ * Adversarial / Edge-case Tests cho authMiddleware — US-01 + US-02 (Tester Agent)
  * ============================================================================
  * Bổ sung các test cases ngoài 8 test cases cơ bản từ Dev.
  * Tập trung vào edge cases, adversarial inputs, và integration verification.
@@ -19,6 +19,8 @@
  * - TC-ADV-12: Verify authMiddleware là synchronous (không return Promise)
  * - TC-ADV-13: Authorization header có spaces thừa giữa "Bearer" và token
  * - TC-ADV-14: Verify response Content-Type ngầm định (json)
+ *
+ * US-02: Updated MockRequest, mockPayload, và expectations to include `role`
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -46,12 +48,12 @@ vi.mock("../utils/logger.js", () => ({
 import { authMiddleware, errorHandler, requestLogger, requireFields } from "./middleware.js";
 
 // =============================================
-// Helpers
+// Helpers — US-02: MockRequest.user có thêm role
 // =============================================
 
 interface MockRequest {
   headers: Record<string, string | undefined>;
-  user?: { userId: string; email: string };
+  user?: { userId: string; email: string; role: string };
   method?: string;
   path?: string;
   body?: unknown;
@@ -247,6 +249,7 @@ describe("authMiddleware — Adversarial & Edge-case Tests (Tester Agent)", () =
       const validPayload = {
         userId: "user-1",
         email: "test@test.com",
+        role: "user",
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 3600,
       };
@@ -258,7 +261,7 @@ describe("authMiddleware — Adversarial & Edge-case Tests (Tester Agent)", () =
       const next1 = vi.fn();
       authMiddleware(req1 as unknown as Request, res1 as unknown as Response, next1 as NextFunction);
       expect(next1).toHaveBeenCalledTimes(1);
-      expect(req1.user).toEqual({ userId: "user-1", email: "test@test.com" });
+      expect(req1.user).toEqual({ userId: "user-1", email: "test@test.com", role: "user" });
 
       // Call 2: invalid token
       mockVerifyToken.mockReturnValue(null);

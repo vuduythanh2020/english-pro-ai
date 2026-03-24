@@ -37,6 +37,7 @@ router.post(
 
       const config = {
         configurable: { thread_id: threadId },
+        recursionLimit: 150
       };
 
       logger.info(`📝 New feature request: "${featureRequest.substring(0, 80)}..."`);
@@ -68,6 +69,7 @@ router.post(
             designDocument: result.designDocument || null,
             sourceCode: result.sourceCode || null,
             testResults: result.testResults || null,
+            workflowSummary: result.workflowSummary || null,
           },
         },
       });
@@ -97,6 +99,7 @@ router.post(
 
       const config = {
         configurable: { thread_id: threadId },
+        recursionLimit: 150
       };
 
       if (!["approve", "reject"].includes(action)) {
@@ -138,6 +141,7 @@ router.post(
             designDocument: result.designDocument || null,
             sourceCode: result.sourceCode || null,
             testResults: result.testResults || null,
+            workflowSummary: result.workflowSummary || null,
           },
         },
       });
@@ -164,6 +168,7 @@ router.get("/status/:threadId", async (req: Request, res: Response) => {
 
     const config = {
       configurable: { thread_id: threadId },
+      recursionLimit: 150
     };
 
     const state = await graph.getState(config);
@@ -189,6 +194,7 @@ router.get("/status/:threadId", async (req: Request, res: Response) => {
           designDocument: state.values.designDocument || null,
           sourceCode: state.values.sourceCode || null,
           testResults: state.values.testResults || null,
+          workflowSummary: state.values.workflowSummary || null,
         },
       },
     });

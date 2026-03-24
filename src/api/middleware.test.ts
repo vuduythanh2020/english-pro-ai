@@ -1,5 +1,5 @@
 /**
- * Unit Tests cho authMiddleware — US-01
+ * Unit Tests cho authMiddleware — US-01 + US-02 (Role in JWT)
  * ============================================================================
  * Test hàm authMiddleware trực tiếp với mock Express Request/Response/NextFunction.
  * Mock verifyToken từ jwt.utils.js bằng vi.mock().
@@ -12,7 +12,7 @@
  * - TC-M05: Token invalid signature (verifyToken trả null) → 401 "Invalid or expired token"
  * - TC-M06: Token hợp lệ → gắn req.user và gọi next()
  * - TC-M07: Token hợp lệ → res.status() và res.json() KHÔNG được gọi
- * - TC-M08: req.user chỉ chứa userId và email (không chứa iat, exp)
+ * - TC-M08: req.user chứa userId, email, role (không chứa iat, exp)
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -45,7 +45,7 @@ import { authMiddleware } from "./middleware.js";
 
 interface MockRequest {
   headers: Record<string, string | undefined>;
-  user?: { userId: string; email: string };
+  user?: { userId: string; email: string; role: string };
   method?: string;
   path?: string;
   body?: unknown;
@@ -79,7 +79,7 @@ function createMockRes(): MockResponse {
 // Test Suite
 // =============================================
 
-describe("authMiddleware — US-01", () => {
+describe("authMiddleware — US-01 + US-02", () => {
   let mockNext: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -183,6 +183,7 @@ describe("authMiddleware — US-01", () => {
     const mockPayload = {
       userId: "550e8400-e29b-41d4-a716-446655440000",
       email: "user@example.com",
+      role: "user",
       iat: Math.floor(Date.now() / 1000),
       exp: Math.floor(Date.now() / 1000) + 3600,
     };
@@ -198,6 +199,7 @@ describe("authMiddleware — US-01", () => {
       expect(req.user).toEqual({
         userId: mockPayload.userId,
         email: mockPayload.email,
+        role: mockPayload.role,
       });
       expect(mockNext).toHaveBeenCalledTimes(1);
     });
@@ -213,7 +215,7 @@ describe("authMiddleware — US-01", () => {
       expect(res.json).not.toHaveBeenCalled();
     });
 
-    it("TC-M08: req.user chỉ chứa userId và email (không chứa iat, exp)", () => {
+    it("TC-M08: req.user chứa userId, email, role (không chứa iat, exp)", () => {
       mockVerifyToken.mockReturnValue(mockPayload);
       const req = createMockReq({ authorization: "Bearer valid.token.here" });
       const res = createMockRes();
@@ -222,9 +224,10 @@ describe("authMiddleware — US-01", () => {
 
       expect(req.user).toBeDefined();
       const userKeys = Object.keys(req.user!);
-      expect(userKeys).toHaveLength(2);
+      expect(userKeys).toHaveLength(3);
       expect(userKeys).toContain("userId");
       expect(userKeys).toContain("email");
+      expect(userKeys).toContain("role");
       expect(req.user).not.toHaveProperty("iat");
       expect(req.user).not.toHaveProperty("exp");
     });

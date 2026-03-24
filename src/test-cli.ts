@@ -30,7 +30,7 @@ async function runTest() {
 
   const graph = buildDevTeamGraph();
   const threadId = "cli-thread-" + Date.now();
-  const runConfig = { configurable: { thread_id: threadId } };
+  const runConfig = { configurable: { thread_id: threadId }, recursionLimit: 150 };
 
   const featureRequest = await rl.question("📝 Vui lòng nhập Feature Request (Yêu cầu tính năng):\n> ");
 
@@ -100,6 +100,14 @@ async function runTest() {
   console.log("Design Doc   :", result.designDocument ? "Có" : "Không");
   console.log("Source Code  :", result.sourceCode ? "Có" : "Không");
   console.log("Test Results :", result.testResults ? "Có" : "Không");
+  console.log("\n=======================================================");
+  if (result.workflowSummary) {
+    console.log("📄 BÁO CÁO TỔNG KẾT WORKFLOW\n");
+    console.log(result.workflowSummary);
+  } else {
+    console.log("⚠️ KHÔNG CÓ BÁO CÁO TỔNG KẾT");
+  }
+  console.log("=======================================================\n");
 
   rl.close();
 }

@@ -477,14 +477,7 @@ Chú ý: Hãy dùng tool \`write_file\` để lưu code mới. Tuyệt đối kh
 
         const nudgeMsg = `⚠️ HỆ THỐNG PHÁT HIỆN LỆNH THẤT BẠI TRONG VÒNG NÀY.
 
-QUY TRÌNH SỬA LỖI BẮT BUỘC:
-1. ĐỌC KỸ error output ở trên — tìm pattern: \`file(line,col): error TSxxxx: message\`
-2. XÁC ĐỊNH file lỗi:
-   - ${writtenFilesList}
-   - Nếu file lỗi NẰM TRONG danh sách trên → BẮT BUỘC SỬA NGAY bằng \`read_project_file\` rồi \`write_file\`
-   - Nếu file lỗi KHÔNG nằm trong danh sách (pre-existing) → GHI NHẬN, tiếp tục công việc
-3. Sau khi sửa → chạy lại \`tsc --noEmit\` để verify
-4. TUYỆT ĐỐI KHÔNG: retry cùng command mà không sửa gì, hoặc bỏ qua lỗi rồi submit
+Skill ERROR-FIX-LOOP đã được tự động kích hoạt trong System Prompt của bạn. BẮT BUỘC ĐỌC KỸ quy trình xử lý lỗi ở trên cùng của file và LÀM THEO ĐÚNG HƯỚNG DẪN.
 
 HÃY BẮT ĐẦU SỬA LỖI NGAY.`;
 

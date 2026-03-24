@@ -5,7 +5,7 @@ import { initializeDatabase } from "./config/database.config.js";
 import { chatRoutes } from "./api/chat.routes.js";
 import { devTeamRoutes } from "./api/dev-team.routes.js";
 import { authRoutes } from "./api/auth/auth.routes.js";
-import { authMiddleware, errorHandler, requestLogger } from "./api/middleware.js";
+import { authMiddleware, requireRole, errorHandler, requestLogger } from "./api/middleware.js";
 import { logger } from "./utils/logger.js";
 
 // Validate config
@@ -20,7 +20,6 @@ app.use(requestLogger);
 
 // Public routes — KHÔNG yêu cầu auth
 app.use("/api/auth", authRoutes);
-app.use("/api/dev-team", devTeamRoutes);
 
 // Health check — public
 app.get("/api/health", (_req, res) => {
@@ -33,6 +32,7 @@ app.get("/api/health", (_req, res) => {
 
 // Protected routes — yêu cầu JWT auth
 app.use("/api/chat", authMiddleware, chatRoutes);
+app.use("/api/dev-team", authMiddleware, requireRole("admin"), devTeamRoutes);
 
 // Error handler
 app.use(errorHandler);
@@ -61,9 +61,9 @@ async function startServer(): Promise<void> {
   ║  API Endpoints:                              ║
   ║  POST /api/chat          - Chat (auth req)   ║
   ║  POST /api/chat/stream   - Stream (auth req) ║
-  ║  POST /api/dev-team/start   - Start workflow ║
-  ║  POST /api/dev-team/approve - Approve/Reject ║
-  ║  GET  /api/dev-team/status/:id - Status      ║
+  ║  POST /api/dev-team/start   - Start (admin)  ║
+  ║  POST /api/dev-team/approve - Approve (admin) ║
+  ║  GET  /api/dev-team/status/:id - Status(admin)║
   ║  POST /api/auth/register - Register account  ║
   ║  POST /api/auth/login    - Login with JWT    ║
   ║  GET  /api/health        - Health check      ║

@@ -155,6 +155,36 @@ export async function verifyUsersSchema(): Promise<boolean> {
 }
 
 /**
+ * Kiểm tra cột role đã tồn tại trong bảng users.
+ * Dùng để xác nhận migration 005_user_roles.sql đã chạy thành công.
+ * @returns true nếu cột role tồn tại
+ */
+export async function verifyUserRoleColumn(): Promise<boolean> {
+  try {
+    const result = await pool.query<{ column_name: string }>(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'users'
+         AND column_name = 'role'`
+    );
+
+    const exists = result.rows.length > 0;
+
+    if (exists) {
+      logger.info("✅ User role column verified.");
+    } else {
+      logger.warn("⚠️ User role column not found. Migration 005 may not have run.");
+    }
+
+    return exists;
+  } catch (error) {
+    logger.warn("⚠️ Failed to verify user role column:", error);
+    return false;
+  }
+}
+
+/**
  * Gracefully close the database pool.
  */
 export async function closeDatabase(): Promise<void> {

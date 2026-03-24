@@ -1,5 +1,5 @@
 /**
- * JWT Utilities — US-04
+ * JWT Utilities — US-04 + US-02 (Role in JWT)
  * ============================================================================
  * Tạo và verify JWT token sử dụng Node.js built-in crypto module.
  * Implement HMAC-SHA256 (HS256) thủ công — KHÔNG thêm library mới.
@@ -8,23 +8,29 @@
  *
  * Token format: header.payload.signature
  * - Header:    {"alg":"HS256","typ":"JWT"} → Base64URL
- * - Payload:   { userId, email, iat, exp } → Base64URL
+ * - Payload:   { userId, email, role, iat, exp } → Base64URL
  * - Signature: HMAC-SHA256(header.payload, secret) → Base64URL
  *
  * Security:
  * - crypto.timingSafeEqual cho signature comparison (chống timing attack)
  * - try-catch bao toàn bộ verifyToken (mọi lỗi → return null)
+ *
+ * US-02 Changes:
+ * - JwtPayload thêm trường `role: string`
+ * - generateToken() nhận thêm `role` trong input payload
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { config } from "../../config/env.js";
 
 /**
- * JWT Payload — chứa thông tin user và metadata thời gian.
+ * JWT Payload — chứa thông tin user (bao gồm role) và metadata thời gian.
  */
 export interface JwtPayload {
   userId: string;
   email: string;
+  /** User role — e.g. 'user' or 'admin' */
+  role: string;
   /** Issued At — Unix timestamp (seconds) */
   iat: number;
   /** Expiry — Unix timestamp (seconds) */
@@ -78,24 +84,25 @@ function createSignature(headerPayload: string, secret: string): string {
 }
 
 /**
- * Tạo JWT token từ payload { userId, email }.
+ * Tạo JWT token từ payload { userId, email, role }.
  * Sử dụng HMAC-SHA256 với secret từ config.jwt.secret.
  *
- * @param payload - { userId: string, email: string }
+ * @param payload - { userId: string, email: string, role: string }
  * @returns JWT token string dạng header.payload.signature
  *
  * @example
  * ```ts
- * const token = generateToken({ userId: "uuid-123", email: "user@example.com" });
+ * const token = generateToken({ userId: "uuid-123", email: "user@example.com", role: "user" });
  * // "eyJ0eXAi...payload...signature"
  * ```
  */
-export function generateToken(payload: { userId: string; email: string }): string {
+export function generateToken(payload: { userId: string; email: string; role: string }): string {
   const now = Math.floor(Date.now() / 1000);
 
   const jwtPayload: JwtPayload = {
     userId: payload.userId,
     email: payload.email,
+    role: payload.role,
     iat: now,
     exp: now + config.jwt.expiresIn,
   };
@@ -123,7 +130,7 @@ export function generateToken(payload: { userId: string; email: string }): strin
  * ```ts
  * const payload = verifyToken(token);
  * if (payload) {
- *   console.log(payload.userId, payload.email);
+ *   console.log(payload.userId, payload.email, payload.role);
  * }
  * ```
  */

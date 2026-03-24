@@ -191,10 +191,10 @@ describe("US-01: Migration 004 - Users Table", () => {
       expect(idx004).toBeGreaterThan(idx003);
     });
 
-    it("migration files count should be exactly 4", () => {
+    it("migration files count should be at least 4", () => {
       const migrationsDir = resolve(__dirname, "../migrations");
       const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql"));
-      expect(files).toHaveLength(4);
+      expect(files.length).toBeGreaterThanOrEqual(4);
     });
   });
 

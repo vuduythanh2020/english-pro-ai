@@ -125,6 +125,22 @@ export const DevTeamState = Annotation.Root({
   }),
 
   // ============================================================================
+  // WORKFLOW SUMMARY — Tích lũy báo cáo sau mỗi story
+  // ============================================================================
+
+  /** Mảng tích lũy summary sau mỗi story (APPEND reducer — không bị ghi đè) */
+  completedStorySummaries: Annotation<string[]>({
+    reducer: (prev, next) => [...prev, ...next],
+    default: () => [],
+  }),
+
+  /** Bản tóm tắt cuối cùng toàn bộ workflow (do LLM tạo khi hoàn thành) */
+  workflowSummary: Annotation<string>({
+    reducer: (_, next) => next,
+    default: () => "",
+  }),
+
+  // ============================================================================
   // WORKFLOW TRACKING (US-01)
   // Liên kết graph state ↔ database records xuyên suốt workflow lifecycle
   // ============================================================================

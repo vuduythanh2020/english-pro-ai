@@ -1,5 +1,8 @@
 import { StateGraph, interrupt, Command, MemorySaver } from "@langchain/langgraph";
+import { ChatAnthropic } from "@langchain/anthropic";
+import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import { DevTeamState, type DevTeamStateType } from "./state.js";
+import { config } from "../config/env.js";
 import { poAgentNode } from "./agents/po.agent.js";
 import { baAgentNode } from "./agents/ba.agent.js";
 import { devAgentNode } from "./agents/dev.agent.js";
@@ -10,6 +13,7 @@ import { logger } from "../utils/logger.js";
 import {
   createWorkflowRun,
   updateWorkflowRunStatus,
+  updateWorkflowRunMetadata,
   createWorkflowApproval,
   updateWorkflowPhaseStatus,
   completeWorkflowPhase,
@@ -215,8 +219,58 @@ async function usRouterNode(
       }
     }
 
+    // --- Generate Final Workflow Summary (LLM AI) ---
+    let workflowSummary = "";
+    const collectedSummaries = state.completedStorySummaries || [];
+    if (collectedSummaries.length > 0) {
+      logger.info(`🤖 Đang sinh bản báo cáo tổng kết workflow từ ${collectedSummaries.length} user stories...`);
+      try {
+        const llm = new ChatAnthropic({
+          anthropicApiKey: config.anthropic.apiKey,
+          modelName: "claude-sonnet-4.6",
+          temperature: 0.2, // Low temp for factual summary
+          maxTokens: 8192,
+          clientOptions: config.anthropic.baseUrl
+            ? { baseURL: config.anthropic.baseUrl, defaultHeaders: { Authorization: `Bearer ${config.anthropic.apiKey}` } }
+            : undefined,
+        });
+
+        const prompt = [
+          `Bạn là trợ lý kỹ thuật. Dựa trên báo cáo từ các sprint bên dưới,`,
+          `hãy tạo BÁO CÁO TỔNG KẾT ngắn gọn (tiếng Việt, Markdown):`,
+          ``,
+          `### 📋 Tóm tắt công việc`,
+          `### 📁 Files đã tạo/sửa`,
+          `### 🚀 Hướng dẫn sử dụng`,
+          `### ⚠️ Lưu ý`,
+          ``,
+          `Feature Request gốc: ${state.featureRequest || "(Không có)"}`,
+          ``,
+          collectedSummaries.join("\n---\n")
+        ].join("\n");
+
+        const response = await llm.invoke([
+          new SystemMessage("Bạn là chuyên gia tổng hợp tài liệu kỹ thuật."),
+          new HumanMessage(prompt),
+        ]);
+
+        workflowSummary = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
+        logger.info(`✅ Đã sinh xong báo cáo tổng kết (${workflowSummary.length} chars).`);
+
+        // Lưu vào database runtime metadata
+        if (state.workflowRunId) {
+          await updateWorkflowRunMetadata(state.workflowRunId, { summary: workflowSummary });
+        }
+      } catch (error) {
+        logger.warn(`⚠️ Lỗi khi sinh báo cáo tổng hợp bằng LLM: ${error}`);
+        // Fallback: Nếu LLM fail, nối các summaries lại thẳng luôn
+        workflowSummary = collectedSummaries.join("\n\n---\n\n");
+      }
+    }
+
     return {
       allUserStories: stories,
+      workflowSummary, // Trả vào state
       nextAgent: "done",
       currentPhase: "done",
     };
@@ -240,6 +294,33 @@ async function designApproval(
     agentName: "ba",
     contentPreview: state.designDocument || "",
   });
+
+  if (config.workflow.autoApprove) {
+    logger.info("⏩ [Auto-Approve] Tự động duyệt Design Document do cấu hình AUTO_APPROVE_ENABLED=true");
+
+    await logApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      workflowPhaseId: state.currentPhaseId,
+      approvalType: "design_approval",
+      decision: "approved",
+      humanFeedback: "Auto-approved by system configuration",
+    });
+
+    await trackApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      currentPhaseId: state.currentPhaseId,
+      approvalType: "design_approval",
+      decision: "approved",
+      feedback: "Auto-approved by system configuration",
+      outputSummary: `Design document auto-approved. Content length: ${state.designDocument?.length || 0} chars`,
+    });
+
+    return {
+      humanFeedback: "",
+      nextAgent: "dev_agent",
+      currentPhase: "development",
+    };
+  }
 
   const approval = interrupt({
     type: "design_review",
@@ -323,6 +404,33 @@ async function codeReview(
     contentPreview: state.sourceCode || "",
   });
 
+  if (config.workflow.autoApprove) {
+    logger.info("⏩ [Auto-Approve] Tự động duyệt Code Review do cấu hình AUTO_APPROVE_ENABLED=true");
+
+    await logApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      workflowPhaseId: state.currentPhaseId,
+      approvalType: "code_review",
+      decision: "approved",
+      humanFeedback: "Auto-approved by system configuration",
+    });
+
+    await trackApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      currentPhaseId: state.currentPhaseId,
+      approvalType: "code_review",
+      decision: "approved",
+      feedback: "Auto-approved by system configuration",
+      outputSummary: `Code review auto-approved. Source length: ${state.sourceCode?.length || 0} chars`,
+    });
+
+    return {
+      humanFeedback: "",
+      nextAgent: "tester_agent",
+      currentPhase: "testing",
+    };
+  }
+
   const approval = interrupt({
     type: "code_review",
     title: "💻 Review Code",
@@ -385,6 +493,31 @@ async function releaseApproval(
     agentName: "tester",
     contentPreview: state.testResults || "",
   });
+
+  if (config.workflow.autoApprove) {
+    logger.info("⏩ [Auto-Approve] Tự động duyệt Release do cấu hình AUTO_APPROVE_ENABLED=true");
+
+    await logApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      workflowPhaseId: state.currentPhaseId,
+      approvalType: "release_approval",
+      decision: "approved",
+      humanFeedback: "Auto-approved by system configuration",
+    });
+
+    await trackApprovalDecision({
+      workflowRunId: state.workflowRunId,
+      currentPhaseId: state.currentPhaseId,
+      approvalType: "release_approval",
+      decision: "approved",
+      feedback: "Auto-approved by system configuration",
+      outputSummary: `Release auto-approved. Test results length: ${state.testResults?.length || 0} chars`,
+    });
+
+    return {
+      nextAgent: "context_sync_agent",
+    };
+  }
 
   const approval = interrupt({
     type: "release_approval",
@@ -458,6 +591,15 @@ async function promptSyncApproval(
   state: DevTeamStateType
 ): Promise<Partial<DevTeamStateType>> {
   logger.info("🔒 Chờ Product Manager duyệt đề xuất thay đổi prompt...");
+
+  if (config.workflow.autoApprove) {
+    logger.info("⏩ [Auto-Approve] Tự động duyệt Prompt Sync do cấu hình AUTO_APPROVE_ENABLED=true");
+    logger.info(`📝 Prompt change proposal auto-approved:\n${state.promptChangeProposal?.slice(0, 500)}`);
+    return {
+      promptChangeProposal: "",
+      nextAgent: "us_router",
+    };
+  }
 
   const approval = interrupt({
     type: "prompt_sync_review",

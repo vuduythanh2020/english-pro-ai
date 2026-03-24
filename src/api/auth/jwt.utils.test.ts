@@ -1,5 +1,5 @@
 /**
- * Unit Tests cho jwt.utils.ts — US-04
+ * Unit Tests cho jwt.utils.ts — US-04 + US-02 (Role in JWT)
  * =============================================
  * Test hàm generateToken() và verifyToken().
  *
@@ -10,13 +10,18 @@
  * - TC-04: verifyToken — signature bị tamper → trả null
  * - TC-05: verifyToken — format sai (không đủ 3 phần) → trả null
  * - TC-06: verifyToken — chuỗi rỗng → trả null
- * - TC-07: Token payload chứa userId, email, iat, exp
+ * - TC-07: Token payload chứa userId, email, role, iat, exp
  * - TC-08: exp - iat = expiresIn (default 86400)
  * - TC-09: Hai lần generateToken cùng payload với thời gian khác → token khác
  * - TC-10: Named exports: generateToken, verifyToken, JwtPayload
  * - TC-11: verifyToken — payload bị sửa → signature mismatch → null
  * - TC-12: verifyToken — undefined/null input → null (try-catch)
  * - TC-13: Token header là HS256/JWT
+ *
+ * US-02 Updates:
+ * - testPayload fixture thêm `role: "user"`
+ * - TC-07 verify thêm `payload.role`
+ * - TC-10 JwtPayload object thêm `role`
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -35,12 +40,13 @@ import { generateToken, verifyToken } from "./jwt.utils.js";
 import type { JwtPayload } from "./jwt.utils.js";
 
 // =============================================
-// Fixtures
+// Fixtures — US-02: thêm role
 // =============================================
 
 const testPayload = {
   userId: "550e8400-e29b-41d4-a716-446655440000",
   email: "test@example.com",
+  role: "user",
 };
 
 // =============================================
@@ -74,7 +80,7 @@ describe("jwt.utils", () => {
       }
     });
 
-    it("TC-07: Token payload chứa userId, email, iat, exp", () => {
+    it("TC-07: Token payload chứa userId, email, role, iat, exp", () => {
       const token = generateToken(testPayload);
       const parts = token.split(".");
 
@@ -84,6 +90,7 @@ describe("jwt.utils", () => {
 
       expect(payload.userId).toBe(testPayload.userId);
       expect(payload.email).toBe(testPayload.email);
+      expect(payload.role).toBe(testPayload.role);
       expect(typeof payload.iat).toBe("number");
       expect(typeof payload.exp).toBe("number");
       expect(payload.iat).toBeGreaterThan(0);
@@ -141,6 +148,7 @@ describe("jwt.utils", () => {
       expect(payload).not.toBeNull();
       expect(payload!.userId).toBe(testPayload.userId);
       expect(payload!.email).toBe(testPayload.email);
+      expect(payload!.role).toBe(testPayload.role);
       expect(typeof payload!.iat).toBe("number");
       expect(typeof payload!.exp).toBe("number");
     });
@@ -218,6 +226,7 @@ describe("jwt.utils", () => {
       const fakePayload = JSON.stringify({
         userId: "hacked-id",
         email: "hacker@evil.com",
+        role: "admin",
         iat: Math.floor(Date.now() / 1000),
         exp: Math.floor(Date.now() / 1000) + 86400,
       });
@@ -256,6 +265,7 @@ describe("jwt.utils", () => {
       expect(decoded).not.toBeNull();
       expect(decoded!.userId).toBe(testPayload.userId);
       expect(decoded!.email).toBe(testPayload.email);
+      expect(decoded!.role).toBe(testPayload.role);
     });
   });
 
@@ -273,6 +283,7 @@ describe("jwt.utils", () => {
       const testObj: JwtPayload = {
         userId: "test",
         email: "test@test.com",
+        role: "user",
         iat: 1000,
         exp: 2000,
       };
